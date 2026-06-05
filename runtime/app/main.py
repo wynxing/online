@@ -6,9 +6,19 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import httpx
+
 from .devices import list_audio_devices
-from .models import GlossaryTerm, GlossaryTermInput, RuntimeConfig, StartSessionRequest
+from .models import (
+    GlossaryTerm,
+    GlossaryTermInput,
+    RuntimeConfig,
+    StartSessionRequest,
+    TestAsrRequest,
+    TestTranslationRequest,
+)
 from .state import RuntimeState
+from .translation_provider import RealTranslationProvider
 from .storage import (
     delete_glossary_term,
     init_storage,
@@ -65,6 +75,79 @@ async def get_config() -> RuntimeConfig:
 async def post_config(config: RuntimeConfig) -> RuntimeConfig:
     state.config = save_config(config)
     return state.config
+
+
+@app.post("/api/test-translation")
+async def test_translation(request: TestTranslationRequest):
+    """Send a test translation request to verify model connectivity."""
+    base_url = request.baseUrl.strip().rstrip("/")
+    api_key = request.apiKey.strip()
+    model = request.translationModel.strip()
+    if not base_url:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Translation Base URL is required."})
+    if not api_key:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Translation API Key is required.", "base_url": base_url})
+    if not model:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Translation model is required.", "base_url": base_url})
+
+    provider = RealTranslationProvider(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+    )
+    try:
+        result = await provider.translate(
+            source_text="Hello world",
+            source_lang="en",
+            target_lang="zh-CN",
+            glossary_terms=[],
+        )
+        return {"ok": True, "sample": result, "model": model, "base_url": base_url}
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "error": str(e),
+                "model": model,
+                "base_url": base_url,
+            },
+        )
+    finally:
+        await provider.aclose()
+
+
+@app.post("/api/test-asr")
+async def test_asr(request: TestAsrRequest):
+    """Verify ASR endpoint is reachable and accepts requests."""
+    base_url = (request.asrBaseUrl or request.baseUrl).strip().rstrip("/")
+    api_key = (request.asrApiKey or request.apiKey).strip()
+    model = request.asrModel.strip()
+    if not base_url:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "ASR Base URL is required."})
+    if not api_key:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "ASR API Key is required.", "base_url": base_url})
+    if not model:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "ASR model is required.", "base_url": base_url})
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            resp.raise_for_status()
+            return {"ok": True, "model": model, "base_url": base_url}
+        except Exception as e:
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "ok": False,
+                    "error": str(e),
+                    "model": model,
+                    "base_url": base_url,
+                },
+            )
 
 
 @app.post("/api/session/start")

@@ -103,6 +103,7 @@ button:disabled {
 .nav-button,
 .secondary-button,
 .primary-button,
+.secondary-button,
 .danger-button,
 .icon-button {
   border: 1px solid transparent;
@@ -126,6 +127,7 @@ button:disabled {
 .nav-button svg,
 .secondary-button svg,
 .primary-button svg,
+.secondary-button svg,
 .danger-button svg,
 .icon-button svg,
 .panel-heading svg {
@@ -230,6 +232,7 @@ button:disabled {
 
 .secondary-button,
 .primary-button,
+.secondary-button,
 .danger-button {
   padding: 0 14px;
   font-weight: 650;
@@ -243,6 +246,23 @@ button:disabled {
 .secondary-button {
   background: var(--panel);
   border-color: var(--line);
+}
+
+.test-result {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin-top: 4px;
+}
+
+.test-result.ok {
+  color: var(--green);
+  background: rgba(94, 224, 184, 0.08);
+}
+
+.test-result.fail {
+  color: var(--red);
+  background: rgba(224, 107, 107, 0.08);
 }
 
 .danger-button {

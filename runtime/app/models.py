@@ -50,6 +50,20 @@ class RuntimeConfig(BaseModel):
     diagnosticsEnabled: bool = True
 
 
+class TestTranslationRequest(BaseModel):
+    baseUrl: str = ""
+    apiKey: str = ""
+    translationModel: str = ""
+
+
+class TestAsrRequest(BaseModel):
+    baseUrl: str = ""
+    apiKey: str = ""
+    asrBaseUrl: str = ""
+    asrApiKey: str = ""
+    asrModel: str = ""
+
+
 class StartSessionRequest(BaseModel):
     inputDeviceId: str = "system_loopback"
     sourceLang: str = "en"
@@ -78,6 +92,7 @@ class SubtitleSegment(BaseModel):
     startTime: float
     endTime: float | None = None
     updatedAt: str
+    supersededBy: str | None = None
 
 
 class GlossaryTerm(BaseModel):

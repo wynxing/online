@@ -105,3 +105,31 @@ export function updateGlossaryTerm(term: GlossaryTerm): Promise<GlossaryTerm> {
 export function deleteGlossaryTerm(id: string): Promise<{ deleted: boolean }> {
   return request(`/api/glossary/${id}`, { method: "DELETE" });
 }
+
+export function testTranslation(
+  config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "translationModel">,
+): Promise<{ ok: boolean; sample?: string; model: string; base_url: string; error?: string }> {
+  return request("/api/test-translation", {
+    method: "POST",
+    body: JSON.stringify({
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      translationModel: config.translationModel,
+    }),
+  });
+}
+
+export function testAsr(
+  config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "asrBaseUrl" | "asrApiKey" | "asrModel">,
+): Promise<{ ok: boolean; model: string; base_url: string; error?: string }> {
+  return request("/api/test-asr", {
+    method: "POST",
+    body: JSON.stringify({
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      asrBaseUrl: config.asrBaseUrl,
+      asrApiKey: config.asrApiKey,
+      asrModel: config.asrModel,
+    }),
+  });
+}
