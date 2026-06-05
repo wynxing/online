@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .devices import list_audio_devices
 from .models import GlossaryTerm, GlossaryTermInput, RuntimeConfig, StartSessionRequest
@@ -68,7 +69,10 @@ async def post_config(config: RuntimeConfig) -> RuntimeConfig:
 
 @app.post("/api/session/start")
 async def start_session(request: StartSessionRequest):
-    return await state.start_session(request)
+    try:
+        return await state.start_session(request)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @app.post("/api/session/stop")

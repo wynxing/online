@@ -9,7 +9,8 @@ from fastapi import WebSocket
 
 from .mock_pipeline import run_mock_subtitle_pipeline
 from .models import RuntimeConfig, SessionRecord, StartSessionRequest
-from .storage import create_session, finish_session
+from .real_pipeline import get_asr_api_key, get_asr_base_url, run_real_subtitle_pipeline
+from .storage import create_session, finish_session, list_glossary
 
 
 def now_iso() -> str:
@@ -69,13 +70,39 @@ class RuntimeState:
         )
         create_session(record)
         stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            run_mock_subtitle_pipeline(
-                session_id=session_id,
-                broadcast=self.hub.broadcast,
-                should_stop=stop_event.is_set,
+
+        if request.asrProvider == "mock":
+            task = asyncio.create_task(
+                run_mock_subtitle_pipeline(
+                    session_id=session_id,
+                    broadcast=self.hub.broadcast,
+                    should_stop=stop_event.is_set,
+                )
             )
-        )
+        else:
+            # 真实模式：校验配置
+            asr_key = get_asr_api_key(self.config)
+            asr_url = get_asr_base_url(self.config)
+            if not asr_key:
+                raise ValueError("ASR API Key 未配置，无法启动真实模式。")
+            if not asr_url:
+                raise ValueError("ASR Base URL 未配置，无法启动真实模式。")
+            if not self.config.apiKey:
+                raise ValueError("翻译 API Key 未配置，无法启动真实模式。")
+
+            glossary = list_glossary() if self.config.glossaryEnabled else []
+
+            task = asyncio.create_task(
+                run_real_subtitle_pipeline(
+                    session_id=session_id,
+                    config=self.config,
+                    broadcast=self.hub.broadcast,
+                    should_stop=stop_event.is_set,
+                    device_id=request.inputDeviceId,
+                    glossary_terms=glossary,
+                )
+            )
+
         self.active_session = ActiveSession(record, request, task, stop_event)
         return record
 

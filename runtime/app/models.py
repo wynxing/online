@@ -37,6 +37,11 @@ class RuntimeConfig(BaseModel):
     displayMode: DisplayMode = DisplayMode.bilingual
     fontSize: int = Field(default=24, ge=14, le=56)
     glossaryEnabled: bool = True
+    asrBaseUrl: str = ""
+    asrApiKey: str = ""
+    asrModel: str = "whisper-1"
+    asrLanguage: str = "en"
+    asrFormat: str = "whisper"  # "whisper" | "chat-completions"
 
 
 class StartSessionRequest(BaseModel):
