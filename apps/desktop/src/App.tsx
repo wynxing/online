@@ -30,6 +30,8 @@ import {
   saveConfig,
   startSession,
   stopSession,
+  testAsr,
+  testTranslation,
   updateGlossaryTerm,
 } from "./api";
 import { mergeSegment } from "./subtitleState";
@@ -117,6 +119,10 @@ function isMissingMimoV1(config: RuntimeConfig): boolean {
   }
   const asrUrl = (config.asrBaseUrl || config.baseUrl).trim().replace(/\/+$/, "").toLowerCase();
   return asrUrl.includes("api.xiaomimimo.com") && !asrUrl.endsWith("/v1");
+}
+
+function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[] {
+  return segments.filter((segment) => !segment.supersededBy);
 }
 
 function useSubtitleSocket() {
@@ -258,6 +264,8 @@ function MainConsole() {
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
   const [notice, setNotice] = useState("Runtime 未检测");
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ kind: string; ok: boolean; message: string } | null>(null);
   const subtitlePaneRef = useRef<HTMLDivElement>(null);
   const {
     segments,
@@ -271,8 +279,10 @@ function MainConsole() {
     setDiagnostics,
   } = useSubtitleSocket();
 
+  const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
   const latestSegment =
-    [...segments].reverse().find((segment) => segment.status !== "interim") ?? segments[segments.length - 1];
+    [...visibleSegments].reverse().find((segment) => segment.status !== "interim") ??
+    visibleSegments[visibleSegments.length - 1];
   const sourceDevice = devices.find((device) => device.id === config.defaultInputDeviceId);
   const isRunning = sessionStatus === "running";
 
@@ -285,7 +295,7 @@ function MainConsole() {
     if (pane) {
       pane.scrollTop = pane.scrollHeight;
     }
-  }, [segments.length]);
+  }, [visibleSegments.length]);
 
   async function bootstrap() {
     try {
@@ -537,7 +547,7 @@ function MainConsole() {
               <div className="session-strip">
                 <StatusPill label="会话" value={activeSession?.title ?? "未启动"} />
                 <StatusPill label="状态" value={sessionStatus} />
-                <StatusPill label="段数" value={String(segments.length)} />
+                <StatusPill label="段数" value={String(visibleSegments.length)} />
                 <StatusPill label="模式" value={config.asrProvider === "mock" ? "Mock" : "真实"} />
               </div>
               {config.diagnosticsEnabled && <DiagnosticsStrip diagnostics={diagnostics} />}
@@ -553,10 +563,10 @@ function MainConsole() {
                 </div>
               )}
               <div className="subtitle-list" ref={subtitlePaneRef}>
-                {segments.length === 0 ? (
+                {visibleSegments.length === 0 ? (
                   <EmptyState title="等待字幕流" body="启动会话后，这里会显示实时识别、翻译和修正事件。" />
                 ) : (
-                  segments.map((segment) => (
+                  visibleSegments.map((segment) => (
                     <SubtitleRow
                       key={segment.id}
                       segment={segment}
@@ -640,6 +650,29 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, asrLanguage: event.target.value })}
                 />
               </label>
+              <button
+                className="secondary-button"
+                disabled={testing !== null}
+                onClick={async () => {
+                  setTesting("asr");
+                  setTestResult(null);
+                  try {
+                    const res = await testAsr(config);
+                    setTestResult({ kind: "asr", ok: true, message: `连接正常：${res.base_url}` });
+                  } catch (err) {
+                    setTestResult({ kind: "asr", ok: false, message: err instanceof Error ? err.message : String(err) });
+                  } finally {
+                    setTesting(null);
+                  }
+                }}
+              >
+                {testing === "asr" ? "测试中..." : "测试 ASR 连接"}
+              </button>
+              {testResult?.kind === "asr" && (
+                <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
+                  {testResult.ok ? "✓" : "✗"} {testResult.message}
+                </div>
+              )}
 
               <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
                 <div>
@@ -668,6 +701,29 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, translationModel: event.target.value })}
                 />
               </label>
+              <button
+                className="secondary-button"
+                disabled={testing !== null}
+                onClick={async () => {
+                  setTesting("translation");
+                  setTestResult(null);
+                  try {
+                    const res = await testTranslation(config);
+                    setTestResult({ kind: "translation", ok: true, message: `连接正常，示例翻译：${res.sample}` });
+                  } catch (err) {
+                    setTestResult({ kind: "translation", ok: false, message: err instanceof Error ? err.message : String(err) });
+                  } finally {
+                    setTesting(null);
+                  }
+                }}
+              >
+                {testing === "translation" ? "测试中..." : "测试翻译连接"}
+              </button>
+              {testResult?.kind === "translation" && (
+                <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
+                  {testResult.ok ? "✓" : "✗"} {testResult.message}
+                </div>
+              )}
 
               <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
                 <div>
@@ -860,12 +916,15 @@ function MainConsole() {
 
 function FloatingSubtitles() {
   const { segments, correctedIds, socketStatus } = useSubtitleSocket();
+  const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
   const [displayMode, setDisplayMode] = useState<DisplayMode>(
     (window.localStorage.getItem("floatingDisplayMode") as DisplayMode) || "bilingual",
   );
   const latest = useMemo(
-    () => [...segments].reverse().find((segment) => segment.status !== "interim") ?? segments[segments.length - 1],
-    [segments],
+    () =>
+      [...visibleSegments].reverse().find((segment) => segment.status !== "interim") ??
+      visibleSegments[visibleSegments.length - 1],
+    [visibleSegments],
   );
 
   useEffect(() => {

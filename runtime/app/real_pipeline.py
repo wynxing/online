@@ -29,9 +29,15 @@ SEGMENT_QUEUE_MAXSIZE = 10
 TRANSLATION_QUEUE_MAXSIZE = 8
 ASR_STALE_SECONDS = 12.0
 TRANSLATION_STALE_SECONDS = 10.0
+TRANSLATION_REORDER_WAIT_SECONDS = 1.2
+TRANSLATION_OPEN_TAIL_WAIT_SECONDS = 0.25
+TRANSLATION_QUEUE_POLL_SECONDS = 0.05
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_SEGMENT_SEQUENCE_RE = re.compile(r"^seg_(\d+)$")
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"')\]]*(?:\s+|$)")
+_SENTENCE_END_RE = re.compile(r"[.!?…][\"')\]]*\s*$")
 _ROLE_PREFIX_RE = re.compile(
     r"^\s*(?:assistant|user|system|transcript|translation|answer)\s*[:：]\s*",
     re.IGNORECASE,
@@ -68,6 +74,18 @@ class RecognizedSegment:
     source_text: str
     recognized_at: float
     timing: SegmentTiming
+
+
+@dataclass
+class TranslationResult:
+    session_id: str
+    item: RecognizedSegment
+    source_text: str
+    final: SubtitleSegment
+    event_type: str
+    worker_id: int
+    translation_queue_size: int
+    translation_lag: float
 
 
 @dataclass(frozen=True)
@@ -555,110 +573,417 @@ async def _run_translation_processors(
 ) -> None:
     context: deque[TranslationContext] = deque(maxlen=2)
     context_lock = asyncio.Lock()
+    ready_buffer: deque[RecognizedSegment] = deque()
+    pending: dict[int, RecognizedSegment] = {}
+    next_sequence = 1
+    open_tail: RecognizedSegment | None = None
+    max_concurrency = max(1, concurrency)
+    worker_slots: asyncio.Queue[int] = asyncio.Queue()
+    for worker_id in range(1, max_concurrency + 1):
+        worker_slots.put_nowait(worker_id)
+    scheduled_tasks: dict[int, asyncio.Task[TranslationResult]] = {}
+    emit_order: deque[int] = deque()
 
-    async def worker(worker_id: int) -> None:
-        while not should_stop() or not translation_queue.empty():
-            try:
-                item = await asyncio.wait_for(translation_queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-
-            loop = asyncio.get_running_loop()
-            translation_lag = loop.time() - item.recognized_at
-            if translation_lag > TRANSLATION_STALE_SECONDS:
-                logger.warning(
-                    "Drop stale translation segment: segment=%s audio=%.2f-%.2f queueLag=%.2fs backlog=%d",
-                    item.segment.id,
-                    item.segment.startTime,
-                    item.segment.endTime or item.segment.startTime,
-                    translation_lag,
-                    translation_queue.qsize(),
-                )
-                await _emit_drop_metrics(session_id, broadcast, diagnostics_enabled, item, "translation_stale")
-                continue
-
-            item.timing.translation_started_at = loop.time()
-            await _emit_metrics(
-                broadcast,
-                diagnostics_enabled,
-                _segment_metrics_payload(
-                    session_id,
-                    item.segment.id,
-                    "translation",
-                    "started",
-                    item.segment,
-                    item.timing,
-                    worker_id=worker_id,
-                    translation_queue_size=translation_queue.qsize(),
-                    queue_lag_ms=translation_lag * 1000,
-                ),
+    async def process_item(item: RecognizedSegment) -> None:
+        nonlocal open_tail
+        if open_tail is not None:
+            await drain_scheduled(block=True)
+            combined_source = _join_source_text(open_tail.source_text, item.source_text)
+            completed_source, remainder = _split_first_sentence(combined_source)
+            correction_source = completed_source or combined_source
+            result = await _translate_segment(
+                session_id=session_id,
+                item=open_tail,
+                source_text=correction_source,
+                translation=translation,
+                glossary_terms=glossary_terms,
+                context=context,
+                context_lock=context_lock,
+                broadcast=broadcast,
+                diagnostics_enabled=diagnostics_enabled,
+                translation_queue_size=translation_queue.qsize(),
+                worker_id=1,
+                event_type="segment.corrected",
+                status=SubtitleStatus.corrected,
             )
-
+            corrected = await _emit_translation_result(
+                result=result,
+                broadcast=broadcast,
+                diagnostics_enabled=diagnostics_enabled,
+            )
             async with context_lock:
-                context_snapshot = list(context)
+                if completed_source:
+                    context.append(TranslationContext(source_text=correction_source, translated_text=corrected.translatedText))
 
-            try:
-                translated_text = await translation.translate(
-                    source_text=item.source_text,
-                    source_lang="en",
-                    target_lang="zh-CN",
-                    glossary_terms=glossary_terms,
-                    context=context_snapshot,
-                )
-            except Exception as e:
-                logger.warning("Translation failed: segment=%s, error=%s", item.segment.id, e)
-                await _broadcast_error(
-                    broadcast,
-                    "TRANSLATION_FAILED",
-                    f"Translation request failed: {e}",
-                    recoverable=True,
-                )
-                translated_text = "[translation failed]"
+            if remainder:
+                remainder_item = _recognized_with_source(item, remainder)
+                open_tail = None
+                await process_item(remainder_item)
+                return
 
-            item.timing.translation_finished_at = loop.time()
-            final = item.segment.model_copy(
-                update={
-                    "translatedText": translated_text,
-                    "status": SubtitleStatus.final,
-                    "version": 2,
-                    "updatedAt": now_iso(),
-                }
+            await _mark_superseded(
+                item=item,
+                superseded_by=open_tail.segment.id,
+                broadcast=broadcast,
             )
-            logger.info(
-                "Translation finalized: segment=%s source=%r translated=%r asrMs=%.0f translationMs=%.0f pipelineMs=%.0f",
+            open_tail = None if completed_source else _recognized_from_segment(corrected, item.recognized_at, open_tail.timing)
+            return
+
+        if _is_sentence_complete(item.source_text):
+            if max_concurrency <= 1 or not context:
+                final = await translate_and_emit_serial(item, item.source_text, "segment.updated", SubtitleStatus.final)
+                async with context_lock:
+                    context.append(TranslationContext(source_text=item.source_text, translated_text=final.translatedText))
+                open_tail = None
+                return
+
+            schedule_complete_translation(item)
+            return
+
+        await drain_scheduled(block=True)
+        next_item = await wait_for_next_ordered_item()
+        if next_item is not None:
+            open_tail = item
+            await process_item(next_item)
+            return
+
+        final = await translate_and_emit_serial(item, item.source_text, "segment.updated", SubtitleStatus.final)
+        open_tail = _recognized_from_segment(final, item.recognized_at, item.timing)
+
+    async def translate_and_emit_serial(
+        item: RecognizedSegment,
+        source_text: str,
+        event_type: str,
+        status: SubtitleStatus,
+    ) -> SubtitleSegment:
+        result = await _translate_segment(
+            session_id=session_id,
+            item=item,
+            source_text=source_text,
+            translation=translation,
+            glossary_terms=glossary_terms,
+            context=context,
+            context_lock=context_lock,
+            broadcast=broadcast,
+            diagnostics_enabled=diagnostics_enabled,
+            translation_queue_size=translation_queue.qsize(),
+            worker_id=1,
+            event_type=event_type,
+            status=status,
+        )
+        return await _emit_translation_result(
+            result=result,
+            broadcast=broadcast,
+            diagnostics_enabled=diagnostics_enabled,
+        )
+
+    def schedule_complete_translation(item: RecognizedSegment) -> None:
+        sequence = _segment_sequence(item.segment.id)
+        emit_order.append(sequence)
+        scheduled_tasks[sequence] = asyncio.create_task(run_scheduled_translation(item))
+
+    async def run_scheduled_translation(item: RecognizedSegment) -> TranslationResult:
+        worker_id = await worker_slots.get()
+        try:
+            return await _translate_segment(
+                session_id=session_id,
+                item=item,
+                source_text=item.source_text,
+                translation=translation,
+                glossary_terms=glossary_terms,
+                context=context,
+                context_lock=context_lock,
+                broadcast=broadcast,
+                diagnostics_enabled=diagnostics_enabled,
+                translation_queue_size=translation_queue.qsize(),
+                worker_id=worker_id,
+                event_type="segment.updated",
+                status=SubtitleStatus.final,
+            )
+        finally:
+            worker_slots.put_nowait(worker_id)
+
+    async def drain_scheduled(block: bool) -> None:
+        while emit_order:
+            sequence = emit_order[0]
+            task = scheduled_tasks[sequence]
+            if not task.done():
+                if not block:
+                    return
+                result = await task
+            else:
+                result = task.result()
+
+            emit_order.popleft()
+            del scheduled_tasks[sequence]
+            final = await _emit_translation_result(
+                result=result,
+                broadcast=broadcast,
+                diagnostics_enabled=diagnostics_enabled,
+            )
+            async with context_lock:
+                context.append(TranslationContext(source_text=result.source_text, translated_text=final.translatedText))
+
+    async def wait_for_next_ordered_item() -> RecognizedSegment | None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + TRANSLATION_OPEN_TAIL_WAIT_SECONDS
+        while loop.time() < deadline:
+            ready_buffer.extend(ordered_ready_items(force=False))
+            if ready_buffer:
+                return ready_buffer.popleft()
+
+            timeout = min(TRANSLATION_QUEUE_POLL_SECONDS, max(0.0, deadline - loop.time()))
+            if timeout <= 0:
+                break
+            await ingest_next_item(timeout)
+        return None
+
+    async def ingest_next_item(timeout: float) -> None:
+        try:
+            item = await asyncio.wait_for(translation_queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return
+
+        loop = asyncio.get_running_loop()
+        translation_lag = loop.time() - item.recognized_at
+        if translation_lag > TRANSLATION_STALE_SECONDS:
+            logger.warning(
+                "Drop stale translation segment: segment=%s audio=%.2f-%.2f queueLag=%.2fs backlog=%d",
                 item.segment.id,
-                item.source_text[:160],
-                translated_text[:160],
-                _elapsed_ms(item.timing.asr_started_at, item.timing.asr_finished_at),
-                _elapsed_ms(item.timing.translation_started_at, item.timing.translation_finished_at),
-                _elapsed_ms(item.timing.segment_queued_at, item.timing.translation_finished_at),
+                item.segment.startTime,
+                item.segment.endTime or item.segment.startTime,
+                translation_lag,
+                translation_queue.qsize(),
             )
-            upsert_segment(final)
-            async with context_lock:
-                context.append(TranslationContext(source_text=item.source_text, translated_text=translated_text))
-            await broadcast("segment.updated", final.model_dump(mode="json"))
-            await _emit_metrics(
-                broadcast,
-                diagnostics_enabled,
-                _segment_metrics_payload(
-                    session_id,
-                    item.segment.id,
-                    "translation",
-                    "finished",
-                    item.segment,
-                    item.timing,
-                    worker_id=worker_id,
-                    translation_queue_size=translation_queue.qsize(),
-                    queue_lag_ms=translation_lag * 1000,
-                ),
-            )
+            await _emit_drop_metrics(session_id, broadcast, diagnostics_enabled, item, "translation_stale")
+            return
 
-    workers = [asyncio.create_task(worker(i + 1)) for i in range(max(1, concurrency))]
+        pending[_segment_sequence(item.segment.id)] = item
+
+    def ordered_ready_items(force: bool) -> list[RecognizedSegment]:
+        nonlocal next_sequence
+        ready: list[RecognizedSegment] = []
+        loop = asyncio.get_running_loop()
+        while pending:
+            if next_sequence in pending:
+                ready.append(pending.pop(next_sequence))
+                next_sequence += 1
+                continue
+
+            oldest_pending_at = min(item.recognized_at for item in pending.values())
+            if not force and (loop.time() - oldest_pending_at) < TRANSLATION_REORDER_WAIT_SECONDS:
+                break
+
+            next_available = min(pending)
+            logger.warning(
+                "Skip missing ASR segment sequence before translation: expected=%d next_available=%d",
+                next_sequence,
+                next_available,
+            )
+            next_sequence = next_available
+        return ready
+
     try:
-        await asyncio.gather(*workers)
+        while not should_stop() or not translation_queue.empty() or pending or ready_buffer or scheduled_tasks:
+            force_order = should_stop() and translation_queue.empty()
+            if not ready_buffer:
+                if scheduled_tasks and translation_queue.empty() and not pending:
+                    await drain_scheduled(block=True)
+                    continue
+
+                await ingest_next_item(timeout=0.2)
+                ready_buffer.extend(ordered_ready_items(force=force_order))
+
+            while ready_buffer:
+                ordered_item = ready_buffer.popleft()
+                await process_item(ordered_item)
+                await drain_scheduled(block=False)
+
+            await drain_scheduled(block=False)
     except asyncio.CancelledError:
-        for task in workers:
+        for task in scheduled_tasks.values():
             task.cancel()
+        return
+    await drain_scheduled(block=True)
+
+
+async def _translate_segment(
+    session_id: str,
+    item: RecognizedSegment,
+    source_text: str,
+    translation: RealTranslationProvider,
+    glossary_terms: list[GlossaryTerm],
+    context: deque[TranslationContext],
+    context_lock: asyncio.Lock,
+    broadcast: Broadcast,
+    diagnostics_enabled: bool,
+    translation_queue_size: int,
+    worker_id: int,
+    event_type: str,
+    status: SubtitleStatus,
+) -> TranslationResult:
+    loop = asyncio.get_running_loop()
+    translation_lag = loop.time() - item.recognized_at
+    item.timing.translation_started_at = loop.time()
+    await _emit_metrics(
+        broadcast,
+        diagnostics_enabled,
+        _segment_metrics_payload(
+            session_id,
+            item.segment.id,
+            "translation",
+            "started",
+            item.segment,
+            item.timing,
+            worker_id=worker_id,
+            translation_queue_size=translation_queue_size,
+            queue_lag_ms=translation_lag * 1000,
+        ),
+    )
+
+    async with context_lock:
+        context_snapshot = list(context)
+
+    try:
+        translated_text = await translation.translate(
+            source_text=source_text,
+            source_lang="en",
+            target_lang="zh-CN",
+            glossary_terms=glossary_terms,
+            context=context_snapshot,
+        )
+    except Exception as e:
+        logger.warning("Translation failed: segment=%s, error=%s", item.segment.id, e)
+        await _broadcast_error(
+            broadcast,
+            "TRANSLATION_FAILED",
+            f"Translation request failed: {e}",
+            recoverable=True,
+        )
+        translated_text = "[translation failed]"
+
+    item.timing.translation_finished_at = loop.time()
+    final = item.segment.model_copy(
+        update={
+            "sourceText": source_text,
+            "translatedText": translated_text,
+            "status": status,
+            "version": item.segment.version + 1,
+            "updatedAt": now_iso(),
+            "supersededBy": None,
+        }
+    )
+    return TranslationResult(
+        session_id=session_id,
+        item=item,
+        source_text=source_text,
+        final=final,
+        event_type=event_type,
+        worker_id=worker_id,
+        translation_queue_size=translation_queue_size,
+        translation_lag=translation_lag,
+    )
+
+
+async def _emit_translation_result(
+    result: TranslationResult,
+    broadcast: Broadcast,
+    diagnostics_enabled: bool,
+) -> SubtitleSegment:
+    logger.info(
+        "Translation finalized: event=%s segment=%s source=%r translated=%r asrMs=%.0f translationMs=%.0f pipelineMs=%.0f",
+        result.event_type,
+        result.item.segment.id,
+        result.source_text[:160],
+        result.final.translatedText[:160],
+        _elapsed_ms(result.item.timing.asr_started_at, result.item.timing.asr_finished_at),
+        _elapsed_ms(result.item.timing.translation_started_at, result.item.timing.translation_finished_at),
+        _elapsed_ms(result.item.timing.segment_queued_at, result.item.timing.translation_finished_at),
+    )
+    upsert_segment(result.final)
+    await broadcast(result.event_type, result.final.model_dump(mode="json"))
+    await _emit_metrics(
+        broadcast,
+        diagnostics_enabled,
+        _segment_metrics_payload(
+            result.session_id,
+            result.item.segment.id,
+            "translation",
+            "finished",
+            result.final,
+            result.item.timing,
+            worker_id=result.worker_id,
+            translation_queue_size=result.translation_queue_size,
+            queue_lag_ms=result.translation_lag * 1000,
+        ),
+    )
+    return result.final
+
+
+async def _mark_superseded(
+    item: RecognizedSegment,
+    superseded_by: str,
+    broadcast: Broadcast,
+) -> None:
+    superseded = item.segment.model_copy(
+        update={
+            "translatedText": "",
+            "status": SubtitleStatus.final,
+            "version": item.segment.version + 1,
+            "updatedAt": now_iso(),
+            "supersededBy": superseded_by,
+        }
+    )
+    await broadcast("segment.updated", superseded.model_dump(mode="json"))
+
+
+def _recognized_with_source(item: RecognizedSegment, source_text: str) -> RecognizedSegment:
+    return RecognizedSegment(
+        segment=item.segment.model_copy(update={"sourceText": source_text}),
+        source_text=source_text,
+        recognized_at=item.recognized_at,
+        timing=item.timing,
+    )
+
+
+def _recognized_from_segment(
+    segment: SubtitleSegment,
+    recognized_at: float,
+    timing: SegmentTiming,
+) -> RecognizedSegment:
+    return RecognizedSegment(
+        segment=segment,
+        source_text=segment.sourceText,
+        recognized_at=recognized_at,
+        timing=timing,
+    )
+
+
+def _segment_sequence(segment_id: str) -> int:
+    match = _SEGMENT_SEQUENCE_RE.match(segment_id)
+    if match:
+        return int(match.group(1))
+    return 1_000_000_000
+
+
+def _is_sentence_complete(source_text: str) -> bool:
+    return bool(_SENTENCE_END_RE.search(source_text.strip()))
+
+
+def _split_first_sentence(source_text: str) -> tuple[str | None, str]:
+    match = _SENTENCE_BOUNDARY_RE.search(source_text.strip())
+    if not match:
+        return None, ""
+    end = match.end()
+    text = source_text.strip()
+    return text[:end].strip(), text[end:].strip()
+
+
+def _join_source_text(*parts: str) -> str:
+    text = " ".join(part.strip() for part in parts if part.strip())
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 async def _run_signal_monitor(

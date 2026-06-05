@@ -43,6 +43,7 @@ export interface SubtitleSegment {
   startTime: number;
   endTime?: number;
   updatedAt: string;
+  supersededBy?: string;
 }
 
 export interface SessionRecord {
