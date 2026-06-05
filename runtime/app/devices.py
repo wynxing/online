@@ -30,7 +30,8 @@ def _list_devices_pyaudiowpatch() -> list[Device]:
     except ImportError:
         return []
 
-    devices: list[Device] = []
+    loopbacks: list[Device] = []
+    microphones: list[Device] = []
     pa = None
     try:
         pa = pyaudio.PyAudio()
@@ -52,22 +53,21 @@ def _list_devices_pyaudiowpatch() -> list[Device]:
             if "WASAPI" not in host.get("name", "").upper():
                 continue
 
-            name = info.get("name", f"Device {i}")
+            name = _normalize_device_name(str(info.get("name", f"Device {i}")))
             max_in = int(info.get("maxInputChannels") or 0)
-            max_out = int(info.get("maxOutputChannels") or 0)
 
             if "[Loopback]" in name and max_in > 0:
-                devices.append(
+                loopbacks.append(
                     Device(
                         id=f"wasapi_loopback_{i}",
                         name=f"{name}",
                         kind="system",
-                        isDefault=len(devices) == 0,
+                        isDefault=False,
                         description="Windows WASAPI loopback for system audio capture.",
                     )
                 )
             elif max_in > 0 and "[Loopback]" not in name:
-                devices.append(
+                microphones.append(
                     Device(
                         id=f"mic_{i}",
                         name=name,
@@ -78,7 +78,8 @@ def _list_devices_pyaudiowpatch() -> list[Device]:
 
     except Exception as e:
         logger.debug("pyaudiowpatch 枚举失败: %s", e)
-        devices = []
+        loopbacks = []
+        microphones = []
     finally:
         if pa:
             try:
@@ -86,12 +87,14 @@ def _list_devices_pyaudiowpatch() -> list[Device]:
             except Exception:
                 pass
 
-    return devices
+    devices = loopbacks + microphones
+    return _mark_first_default(devices)
 
 
 def _list_devices_sounddevice() -> list[Device]:
     """Enumerate devices via sounddevice (fallback)."""
-    devices: list[Device] = []
+    outputs: list[Device] = []
+    microphones: list[Device] = []
     try:
         import sounddevice as sd  # type: ignore
 
@@ -99,19 +102,19 @@ def _list_devices_sounddevice() -> list[Device]:
         for index, item in enumerate(raw_devices):
             max_output = int(item.get("max_output_channels") or 0)
             max_input = int(item.get("max_input_channels") or 0)
-            name = str(item.get("name") or f"Device {index}")
+            name = _normalize_device_name(str(item.get("name") or f"Device {index}"))
             if max_output > 0:
-                devices.append(
+                outputs.append(
                     Device(
                         id=f"wasapi_loopback_{index}",
                         name=f"{name} (system audio loopback)",
                         kind="system",
-                        isDefault=len(devices) == 0,
+                        isDefault=False,
                         description="Windows loopback candidate for system audio capture.",
                     )
                 )
             elif max_input > 0:
-                devices.append(
+                microphones.append(
                     Device(
                         id=f"mic_{index}",
                         name=name,
@@ -120,9 +123,31 @@ def _list_devices_sounddevice() -> list[Device]:
                     )
                 )
     except Exception:
-        devices = []
+        outputs = []
+        microphones = []
 
-    return devices
+    return _mark_first_default(outputs + microphones)
+
+
+def _mark_first_default(devices: list[Device]) -> list[Device]:
+    """Prefer the first system loopback as the default capture device."""
+    return [
+        device.model_copy(update={"isDefault": index == 0})
+        for index, device in enumerate(devices)
+    ]
+
+
+def _normalize_device_name(name: str) -> str:
+    """Recover UTF-8 device names that some audio APIs expose as latin-1 text."""
+    try:
+        repaired = name.encode("latin1").decode("utf-8")
+    except UnicodeError:
+        return name
+
+    # Only use the repaired value when it meaningfully removes mojibake.
+    if "Ã" in name or "Â" in name or "è" in name or "é" in name:
+        return repaired
+    return name
 
 
 def _list_mock_devices() -> list[Device]:
