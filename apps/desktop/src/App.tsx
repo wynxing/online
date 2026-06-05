@@ -37,6 +37,7 @@ import type {
   Device,
   DisplayMode,
   GlossaryTerm,
+  PipelineMetricsPayload,
   RuntimeConfig,
   RuntimeErrorPayload,
   RuntimeEvent,
@@ -59,6 +60,12 @@ const defaultConfig: RuntimeConfig = {
   asrModel: "whisper-1",
   asrLanguage: "en",
   asrFormat: "whisper",
+  asrConcurrency: 2,
+  translationConcurrency: 3,
+  segmentMinDuration: 1.2,
+  segmentMaxDuration: 3.0,
+  segmentSilenceDuration: 0.35,
+  diagnosticsEnabled: true,
 };
 
 type Tab = "console" | "settings" | "history" | "glossary";
@@ -70,12 +77,55 @@ interface ErrorLogEntry {
   time: string;
 }
 
+interface PipelineDiagnostics {
+  latestSegmentId?: string;
+  latestAsrMs?: number;
+  latestTranslationMs?: number;
+  latestEndToEndMs?: number;
+  segmentQueueSize?: number;
+  translationQueueSize?: number;
+  droppedCount: number;
+  lastDropReason?: string;
+  lowEnergyDrops: number;
+  maxFrameRms?: number;
+}
+
+const emptyDiagnostics: PipelineDiagnostics = {
+  droppedCount: 0,
+  lowEnergyDrops: 0,
+};
+
+function normalizeConfig(config: RuntimeConfig): RuntimeConfig {
+  return { ...defaultConfig, ...config };
+}
+
+function preferLoopbackConfig(config: RuntimeConfig, devices: Device[]): RuntimeConfig {
+  if (config.asrProvider === "mock") {
+    return config;
+  }
+  const selected = devices.find((device) => device.id === config.defaultInputDeviceId);
+  if (selected?.kind === "system") {
+    return config;
+  }
+  const loopback = devices.find((device) => device.kind === "system" && device.id.startsWith("wasapi_loopback_"));
+  return loopback ? { ...config, defaultInputDeviceId: loopback.id } : config;
+}
+
+function isMissingMimoV1(config: RuntimeConfig): boolean {
+  if (config.asrFormat !== "chat-completions") {
+    return false;
+  }
+  const asrUrl = (config.asrBaseUrl || config.baseUrl).trim().replace(/\/+$/, "").toLowerCase();
+  return asrUrl.includes("api.xiaomimimo.com") && !asrUrl.endsWith("/v1");
+}
+
 function useSubtitleSocket() {
   const [segments, setSegments] = useState<SubtitleSegment[]>([]);
   const [sessionStatus, setSessionStatus] = useState("idle");
   const [socketStatus, setSocketStatus] = useState<RuntimeStatus>("checking");
   const [correctedIds, setCorrectedIds] = useState<Set<string>>(new Set());
   const [errorLog, setErrorLog] = useState<ErrorLogEntry[]>([]);
+  const [diagnostics, setDiagnostics] = useState<PipelineDiagnostics>(emptyDiagnostics);
   const reconnectTimer = useRef<number>();
 
   useEffect(() => {
@@ -118,6 +168,11 @@ function useSubtitleSocket() {
           }
           return;
         }
+        if (event.type === "pipeline.metrics") {
+          const metrics = event.payload as PipelineMetricsPayload;
+          setDiagnostics((current) => reduceDiagnostics(current, metrics));
+          return;
+        }
         if (event.type === "runtime.error") {
           const err = event.payload as RuntimeErrorPayload;
           setErrorLog((prev) => [
@@ -144,7 +199,44 @@ function useSubtitleSocket() {
     correctedIds,
     errorLog,
     setErrorLog,
+    diagnostics,
+    setDiagnostics,
   };
+}
+
+function reduceDiagnostics(current: PipelineDiagnostics, metrics: PipelineMetricsPayload): PipelineDiagnostics {
+  const next: PipelineDiagnostics = { ...current };
+  if (metrics.segmentId) {
+    next.latestSegmentId = metrics.segmentId;
+  }
+  if (metrics.stage === "asr" && metrics.status === "finished" && typeof metrics.asrDurationMs === "number") {
+    next.latestAsrMs = metrics.asrDurationMs;
+  }
+  if (
+    metrics.stage === "translation" &&
+    metrics.status === "finished" &&
+    typeof metrics.translationDurationMs === "number"
+  ) {
+    next.latestTranslationMs = metrics.translationDurationMs;
+    if (typeof metrics.endToEndMs === "number") {
+      next.latestEndToEndMs = metrics.endToEndMs;
+    }
+  }
+  if (typeof metrics.segmentQueueSize === "number") {
+    next.segmentQueueSize = metrics.segmentQueueSize;
+  }
+  if (typeof metrics.translationQueueSize === "number") {
+    next.translationQueueSize = metrics.translationQueueSize;
+  }
+  if (metrics.status === "dropped") {
+    next.droppedCount += 1;
+    next.lastDropReason = metrics.dropReason;
+  }
+  if (metrics.stage === "audio" && metrics.status === "stats") {
+    next.lowEnergyDrops = metrics.lowEnergyDrops ?? next.lowEnergyDrops;
+    next.maxFrameRms = metrics.maxFrameRms ?? next.maxFrameRms;
+  }
+  return next;
 }
 
 export function App() {
@@ -167,7 +259,17 @@ function MainConsole() {
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
   const [notice, setNotice] = useState("Runtime 未检测");
   const subtitlePaneRef = useRef<HTMLDivElement>(null);
-  const { segments, setSegments, sessionStatus, socketStatus, correctedIds, errorLog, setErrorLog } = useSubtitleSocket();
+  const {
+    segments,
+    setSegments,
+    sessionStatus,
+    socketStatus,
+    correctedIds,
+    errorLog,
+    setErrorLog,
+    diagnostics,
+    setDiagnostics,
+  } = useSubtitleSocket();
 
   const latestSegment =
     [...segments].reverse().find((segment) => segment.status !== "interim") ?? segments[segments.length - 1];
@@ -194,7 +296,7 @@ function MainConsole() {
         getGlossary(),
         getSessions(),
       ]);
-      setConfig(runtimeConfig);
+      setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
       setDevices(runtimeDevices);
       setGlossary(runtimeGlossary);
       setSessions(runtimeSessions);
@@ -205,7 +307,6 @@ function MainConsole() {
   }
 
   async function handleStart() {
-    // 真实模式前端校验
     if (config.asrProvider !== "mock") {
       const errors: string[] = [];
       const asrKey = config.asrApiKey || config.apiKey;
@@ -213,6 +314,7 @@ function MainConsole() {
       if (!asrUrl) errors.push("ASR 服务地址未配置");
       if (!asrKey) errors.push("ASR API Key 未配置");
       if (!config.apiKey) errors.push("翻译 API Key 未配置");
+      if (isMissingMimoV1(config)) errors.push("MiMo ASR 服务地址需要以 /v1 结尾，例如 https://api.xiaomimimo.com/v1");
       if (sourceDevice?.kind === "mock") errors.push("请选择真实的音频输入设备");
       if (errors.length > 0) {
         setNotice(`无法启动：${errors.join("；")}`);
@@ -231,6 +333,7 @@ function MainConsole() {
       });
       setSegments([]);
       setErrorLog([]);
+      setDiagnostics(emptyDiagnostics);
       setActiveSession(record);
       setNotice("同传会话已启动");
     } catch (err) {
@@ -250,7 +353,7 @@ function MainConsole() {
 
   async function handleSaveConfig() {
     const saved = await saveConfig(config);
-    setConfig(saved);
+    setConfig(normalizeConfig(saved));
     setNotice("配置已保存");
   }
 
@@ -265,7 +368,7 @@ function MainConsole() {
       }
       new WebviewWindow("floating-subtitles", {
         url: "/?view=floating",
-        title: "AI 同声传译字幕",
+        title: "AI 同传字幕",
         width: 960,
         height: 260,
         minWidth: 520,
@@ -310,6 +413,10 @@ function MainConsole() {
     setGlossary((current) => current.filter((item) => item.id !== id));
   }
 
+  function updateConfigNumber(key: keyof RuntimeConfig, value: string) {
+    setConfig({ ...config, [key]: Number(value) });
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -338,7 +445,7 @@ function MainConsole() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <span className="eyebrow">EN → ZH-CN</span>
+            <span className="eyebrow">EN TO ZH-CN</span>
             <h1>{tabTitle(tab)}</h1>
           </div>
           <div className="topbar-actions">
@@ -377,10 +484,10 @@ function MainConsole() {
               </label>
               <div className="device-note">
                 {sourceDevice?.kind === "system"
-                  ? "✓ 已选择系统音频 loopback，可采集播放声音"
+                  ? "已选择系统音频 loopback，可采集播放声音。"
                   : sourceDevice?.kind === "microphone"
-                    ? "⚠ 当前选择的是麦克风，只能采集麦克风声音。要采集系统播放声音，请选择带 [Loopback] 的设备"
-                    : sourceDevice?.description ?? "请选择音频输入设备"}
+                    ? "当前选择的是麦克风。要采集系统播放声音，请选择带 [Loopback] 的设备。"
+                    : sourceDevice?.description ?? "请选择音频输入设备。"}
               </div>
               <div className="segmented">
                 {(["source", "translated", "bilingual"] as DisplayMode[]).map((mode) => (
@@ -433,6 +540,7 @@ function MainConsole() {
                 <StatusPill label="段数" value={String(segments.length)} />
                 <StatusPill label="模式" value={config.asrProvider === "mock" ? "Mock" : "真实"} />
               </div>
+              {config.diagnosticsEnabled && <DiagnosticsStrip diagnostics={diagnostics} />}
               {errorLog.length > 0 && (
                 <div className="error-log">
                   {errorLog.slice(0, 5).map((err, i) => (
@@ -446,7 +554,7 @@ function MainConsole() {
               )}
               <div className="subtitle-list" ref={subtitlePaneRef}>
                 {segments.length === 0 ? (
-                  <EmptyState title="等待字幕流" body="启动会话后，mock 管线会模拟实时识别、翻译和修正事件。" />
+                  <EmptyState title="等待字幕流" body="启动会话后，这里会显示实时识别、翻译和修正事件。" />
                 ) : (
                   segments.map((segment) => (
                     <SubtitleRow
@@ -497,7 +605,7 @@ function MainConsole() {
               <div className="device-note">
                 {config.asrFormat === "whisper"
                   ? "Whisper 格式：音频以文件方式上传，适用于 OpenAI、Groq 等服务。"
-                  : "Chat Completions 格式：音频以 base64 编码发送，适用于小米 MiMo、智谱等国内服务。"}
+                  : "Chat Completions 格式：音频以 base64 编码发送，适用于 MiMo 等兼容服务。"}
               </div>
               <label className="field">
                 <span>ASR 服务地址</span>
@@ -507,9 +615,7 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, asrBaseUrl: event.target.value })}
                 />
               </label>
-              <div className="device-note">
-                地址需要包含 /v1，例如：https://api.xiaomimimo.com/v1
-              </div>
+              <div className="device-note">地址需要包含 /v1，例如：https://api.xiaomimimo.com/v1</div>
               <label className="field">
                 <span>ASR API Key</span>
                 <input
@@ -565,6 +671,69 @@ function MainConsole() {
 
               <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
                 <div>
+                  <span className="eyebrow">Performance</span>
+                  <h2>实时管线</h2>
+                </div>
+                <SlidersHorizontal />
+              </div>
+              <div className="settings-columns">
+                <label className="field">
+                  <span>ASR 并发</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="8"
+                    value={config.asrConcurrency}
+                    onChange={(event) => updateConfigNumber("asrConcurrency", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>翻译并发</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="8"
+                    value={config.translationConcurrency}
+                    onChange={(event) => updateConfigNumber("translationConcurrency", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>最短分段秒数</span>
+                  <input
+                    type="number"
+                    min="0.4"
+                    max="10"
+                    step="0.1"
+                    value={config.segmentMinDuration}
+                    onChange={(event) => updateConfigNumber("segmentMinDuration", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>最长分段秒数</span>
+                  <input
+                    type="number"
+                    min="0.8"
+                    max="20"
+                    step="0.1"
+                    value={config.segmentMaxDuration}
+                    onChange={(event) => updateConfigNumber("segmentMaxDuration", event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>静音切分秒数</span>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="3"
+                    step="0.05"
+                    value={config.segmentSilenceDuration}
+                    onChange={(event) => updateConfigNumber("segmentSilenceDuration", event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
+                <div>
                   <span className="eyebrow">Display</span>
                   <h2>显示设置</h2>
                 </div>
@@ -576,7 +745,7 @@ function MainConsole() {
                   min="14"
                   max="56"
                   value={config.fontSize}
-                  onChange={(event) => setConfig({ ...config, fontSize: Number(event.target.value) })}
+                  onChange={(event) => updateConfigNumber("fontSize", event.target.value)}
                 />
               </label>
               <label className="toggle-row">
@@ -586,6 +755,14 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, glossaryEnabled: event.target.checked })}
                 />
                 <span>翻译时注入启用术语表</span>
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={config.diagnosticsEnabled}
+                  onChange={(event) => setConfig({ ...config, diagnosticsEnabled: event.target.checked })}
+                />
+                <span>显示实时诊断指标</span>
               </label>
               <button className="primary-button" onClick={() => void handleSaveConfig()}>
                 <Save />
@@ -723,6 +900,23 @@ function FloatingSubtitles() {
   );
 }
 
+function DiagnosticsStrip(props: { diagnostics: PipelineDiagnostics }) {
+  const diagnostics = props.diagnostics;
+  return (
+    <div className="diagnostics-strip">
+      <StatusPill label="ASR" value={formatMs(diagnostics.latestAsrMs)} />
+      <StatusPill label="翻译" value={formatMs(diagnostics.latestTranslationMs)} />
+      <StatusPill label="端到端" value={formatMs(diagnostics.latestEndToEndMs)} />
+      <StatusPill label="丢弃" value={String(diagnostics.droppedCount)} />
+      <StatusPill label="队列" value={`${diagnostics.segmentQueueSize ?? 0}/${diagnostics.translationQueueSize ?? 0}`} />
+      <StatusPill label="低能量" value={String(diagnostics.lowEnergyDrops)} />
+      {diagnostics.lastDropReason && (
+        <div className="diagnostics-note">最近丢弃原因：{diagnostics.lastDropReason}</div>
+      )}
+    </div>
+  );
+}
+
 function NavButton(props: { active: boolean; icon: JSX.Element; label: string; onClick: () => void }) {
   return (
     <button className={`nav-button ${props.active ? "active" : ""}`} onClick={props.onClick}>
@@ -800,4 +994,14 @@ function formatDate(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatMs(value?: number) {
+  if (typeof value !== "number") {
+    return "-";
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  return `${Math.round(value)}ms`;
 }

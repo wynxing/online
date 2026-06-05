@@ -25,6 +25,12 @@ export interface RuntimeConfig {
   asrModel: string;
   asrLanguage: string;
   asrFormat: string;
+  asrConcurrency: number;
+  translationConcurrency: number;
+  segmentMinDuration: number;
+  segmentMaxDuration: number;
+  segmentSilenceDuration: number;
+  diagnosticsEnabled: boolean;
 }
 
 export interface SubtitleSegment {
@@ -60,6 +66,34 @@ export interface RuntimeErrorPayload {
   code: string;
   message: string;
   recoverable: boolean;
+}
+
+export interface PipelineMetricsPayload {
+  sessionId?: string;
+  segmentId?: string;
+  stage: "audio" | "segment" | "asr" | "translation" | "queue";
+  status: "stats" | "queued" | "started" | "finished" | "dropped" | "failed";
+  updatedAt?: string;
+  dropReason?: string;
+  droppedCount?: number;
+  workerId?: number;
+  audioStart?: number;
+  audioEnd?: number;
+  audioDurationMs?: number;
+  asrDurationMs?: number | null;
+  translationDurationMs?: number | null;
+  endToEndMs?: number | null;
+  queueLagMs?: number | null;
+  segmentQueueSize?: number;
+  translationQueueSize?: number;
+  frames?: number;
+  segments?: number;
+  lowEnergyDrops?: number;
+  lastFrameRms?: number;
+  maxFrameRms?: number;
+  lastSegmentRms?: number;
+  maxSegmentRms?: number;
+  error?: string;
 }
 
 export interface RuntimeEvent<T = unknown> {
