@@ -7,10 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.models import SubtitleSegment, SubtitleStatus
+from app.main import app
+from app.models import GlossaryTerm, SubtitleSegment, SubtitleStatus
 from app.real_pipeline import (
     QueuedAudioSegment,
     RecognizedSegment,
@@ -20,6 +22,7 @@ from app.real_pipeline import (
     sanitize_asr_text,
 )
 from app.segmenter import AudioSegment, AudioSegmenter
+from app.translation_provider import RealTranslationProvider, TranslationContext, _clean_translation_text, _matched_glossary_terms
 
 
 def pcm_frame(sample_rate: int, channels: int, duration: float, amplitude: int) -> bytes:
@@ -123,6 +126,147 @@ class SegmenterTests(unittest.TestCase):
         self.assertAlmostEqual(segment.end_time - segment.start_time, 1.2, places=1)
 
 
+class TranslationProviderTests(unittest.TestCase):
+    def test_filters_glossary_to_matching_enabled_terms(self) -> None:
+        terms = [
+            GlossaryTerm(id="term_1", source="vector database", target="向量数据库", domain="AI"),
+            GlossaryTerm(id="term_2", source="latency", target="延迟", domain="Systems"),
+            GlossaryTerm(id="term_3", source="disabled term", target="禁用", enabled=False),
+        ]
+
+        matched = _matched_glossary_terms(
+            "The vector database is faster.",
+            [TranslationContext(source_text="Previous latency was high.", translated_text="之前延迟很高。")],
+            terms,
+        )
+
+        self.assertEqual([term["source"] for term in matched], ["vector database", "latency"])
+
+    def test_cleans_translation_protocol_noise(self) -> None:
+        cleaned = _clean_translation_text('```text\nassistant: "这是译文。"\n```')
+        self.assertEqual(cleaned, "这是译文。")
+
+
+class FakeTranslationResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeTranslationClient:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def post(self, *args, **kwargs) -> FakeTranslationResponse:
+        return FakeTranslationResponse(self._payload)
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TranslationProviderAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_translation_content_raises(self) -> None:
+        provider = RealTranslationProvider(
+            base_url="https://example.test/v1",
+            api_key="test-key",
+            model="test-model",
+        )
+        await provider._client.aclose()
+        provider._client = FakeTranslationClient({"choices": [{"message": {"content": ""}}]})
+
+        with self.assertRaisesRegex(RuntimeError, "empty response"):
+            await provider.translate(
+                source_text="Hello world",
+                source_lang="en",
+                target_lang="zh-CN",
+                glossary_terms=[],
+            )
+
+        await provider.aclose()
+
+
+class FakeEndpointTranslationProvider:
+    sample = "translated hello"
+    error: Exception | None = None
+    init_kwargs: dict = {}
+
+    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+        type(self).init_kwargs = {"base_url": base_url, "api_key": api_key, "model": model}
+
+    async def translate(self, *args, **kwargs) -> str:
+        if type(self).error:
+            raise type(self).error
+        return type(self).sample
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TranslationEndpointTests(unittest.TestCase):
+    def setUp(self) -> None:
+        FakeEndpointTranslationProvider.sample = "translated hello"
+        FakeEndpointTranslationProvider.error = None
+        FakeEndpointTranslationProvider.init_kwargs = {}
+
+    def test_translation_test_endpoint_uses_request_config(self) -> None:
+        with patch("app.main.RealTranslationProvider", FakeEndpointTranslationProvider):
+            response = TestClient(app).post(
+                "/api/test-translation",
+                json={
+                    "baseUrl": " https://api.example.test/v1/ ",
+                    "apiKey": "test-key",
+                    "translationModel": "test-model",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": True,
+                "sample": "translated hello",
+                "model": "test-model",
+                "base_url": "https://api.example.test/v1",
+            },
+        )
+        self.assertEqual(
+            FakeEndpointTranslationProvider.init_kwargs,
+            {"base_url": "https://api.example.test/v1", "api_key": "test-key", "model": "test-model"},
+        )
+
+    def test_translation_test_endpoint_returns_502_for_empty_response_error(self) -> None:
+        FakeEndpointTranslationProvider.error = RuntimeError("Translation API returned empty response")
+
+        with patch("app.main.RealTranslationProvider", FakeEndpointTranslationProvider):
+            response = TestClient(app).post(
+                "/api/test-translation",
+                json={
+                    "baseUrl": "https://api.example.test/v1",
+                    "apiKey": "test-key",
+                    "translationModel": "test-model",
+                },
+            )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["ok"], False)
+        self.assertEqual(response.json()["error"], "Translation API returned empty response")
+
+    def test_translation_test_endpoint_validates_required_fields(self) -> None:
+        response = TestClient(app).post(
+            "/api/test-translation",
+            json={"baseUrl": "https://api.example.test/v1", "apiKey": "", "translationModel": "test-model"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["ok"], False)
+        self.assertEqual(response.json()["error"], "Translation API Key is required.")
+
+
 class FakeASR:
     def __init__(self, responses: list[tuple[float, str]]) -> None:
         self._responses = responses
@@ -136,14 +280,21 @@ class FakeASR:
 
 
 class FakeTranslation:
-    def __init__(self, delays: dict[str, float] | None = None) -> None:
+    def __init__(self, delays: dict[str, float] | None = None, failures: set[str] | None = None) -> None:
         self.delays = delays or {}
+        self.failures = failures or set()
         self.context_lengths: list[int] = []
+        self.glossary_lengths: list[int] = []
+        self.sources: list[str] = []
 
     async def translate(self, source_text: str, source_lang: str, target_lang: str, glossary_terms: list, context=None) -> str:
+        self.sources.append(source_text)
         self.context_lengths.append(len(context or []))
+        self.glossary_lengths.append(len(glossary_terms))
         await asyncio.sleep(self.delays.get(source_text, 0.0))
-        return f"译文：{source_text}"
+        if source_text in self.failures:
+            raise RuntimeError("fake translation failure")
+        return f"translation:{source_text}"
 
 
 def make_queued(segment_id: str, start: float) -> QueuedAudioSegment:
@@ -238,6 +389,7 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         updated_ids = [payload["id"] for event, payload in events if event == "segment.updated"]
         self.assertEqual(set(updated_ids), {"seg_001", "seg_002", "seg_003"})
+        self.assertEqual(updated_ids, ["seg_001", "seg_002", "seg_003"])
         self.assertEqual({segment.id for segment in stored}, {"seg_001", "seg_002", "seg_003"})
         self.assertTrue(any(length > 0 for length in translation.context_lengths))
         self.assertTrue(
@@ -247,6 +399,179 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 if event == "pipeline.metrics"
             )
         )
+
+    async def test_translation_concurrency_reduces_complete_segment_latency(self) -> None:
+        translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
+        translation_queue.put_nowait(make_recognized("seg_001", "First line.", 0.0))
+        translation_queue.put_nowait(make_recognized("seg_002", "Second line.", 1.0))
+        translation_queue.put_nowait(make_recognized("seg_003", "Third line.", 2.0))
+
+        events: list[tuple[str, dict]] = []
+
+        async def broadcast(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        translation = FakeTranslation(delays={"First line.": 0.01, "Second line.": 0.08, "Third line.": 0.08})
+        started_at = asyncio.get_running_loop().time()
+        with patch("app.real_pipeline.upsert_segment", lambda segment: None):
+            await _run_translation_processors(
+                session_id="session_test",
+                translation_queue=translation_queue,
+                translation=translation,
+                glossary_terms=[],
+                broadcast=broadcast,
+                should_stop=lambda: True,
+                concurrency=3,
+                diagnostics_enabled=True,
+            )
+        elapsed = asyncio.get_running_loop().time() - started_at
+
+        updated_ids = [payload["id"] for event, payload in events if event == "segment.updated"]
+        self.assertEqual(updated_ids, ["seg_001", "seg_002", "seg_003"])
+        self.assertLess(elapsed, 0.15)
+
+    async def test_translation_corrects_open_tail_with_next_segment(self) -> None:
+        translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
+        translation_queue.put_nowait(make_recognized("seg_001", "became so easy, the countries usually", 0.0))
+        translation_queue.put_nowait(make_recognized("seg_002", "overrelied on one sector.", 1.0))
+
+        events: list[tuple[str, dict]] = []
+        stored: list[SubtitleSegment] = []
+
+        async def broadcast(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        translation = FakeTranslation()
+        with patch("app.real_pipeline.upsert_segment", lambda segment: stored.append(segment)):
+            await _run_translation_processors(
+                session_id="session_test",
+                translation_queue=translation_queue,
+                translation=translation,
+                glossary_terms=[],
+                broadcast=broadcast,
+                should_stop=lambda: True,
+                concurrency=2,
+                diagnostics_enabled=True,
+            )
+
+        corrected = [payload for event, payload in events if event == "segment.corrected"]
+        superseded = [payload for event, payload in events if event == "segment.updated" and payload["id"] == "seg_002"]
+
+        self.assertEqual(len(corrected), 1)
+        self.assertEqual(corrected[0]["id"], "seg_001")
+        self.assertEqual(corrected[0]["sourceText"], "became so easy, the countries usually overrelied on one sector.")
+        self.assertEqual(superseded[-1]["supersededBy"], "seg_001")
+        self.assertNotIn("became so easy, the countries usually", translation.sources)
+        self.assertIn("became so easy, the countries usually overrelied on one sector.", translation.sources)
+        self.assertTrue(any(segment.status == SubtitleStatus.corrected for segment in stored))
+
+    async def test_complete_segment_translates_without_continuation_correction(self) -> None:
+        translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
+        translation_queue.put_nowait(make_recognized("seg_001", "First line.", 0.0))
+
+        events: list[tuple[str, dict]] = []
+
+        async def broadcast(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        translation = FakeTranslation()
+        with patch("app.real_pipeline.upsert_segment", lambda segment: None):
+            await _run_translation_processors(
+                session_id="session_test",
+                translation_queue=translation_queue,
+                translation=translation,
+                glossary_terms=[],
+                broadcast=broadcast,
+                should_stop=lambda: True,
+                concurrency=2,
+                diagnostics_enabled=True,
+            )
+
+        self.assertEqual(translation.sources, ["First line."])
+        self.assertTrue(any(event == "segment.updated" and payload["id"] == "seg_001" for event, payload in events))
+        self.assertFalse(any(event == "segment.corrected" for event, _ in events))
+
+    async def test_translation_failure_emits_recoverable_error_and_placeholder(self) -> None:
+        translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
+        translation_queue.put_nowait(make_recognized("seg_001", "Broken line.", 0.0))
+
+        events: list[tuple[str, dict]] = []
+
+        async def broadcast(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        translation = FakeTranslation(failures={"Broken line."})
+        with patch("app.real_pipeline.upsert_segment", lambda segment: None):
+            await _run_translation_processors(
+                session_id="session_test",
+                translation_queue=translation_queue,
+                translation=translation,
+                glossary_terms=[],
+                broadcast=broadcast,
+                should_stop=lambda: True,
+                concurrency=2,
+                diagnostics_enabled=True,
+            )
+
+        updates = [payload for event, payload in events if event == "segment.updated"]
+        errors = [payload for event, payload in events if event == "runtime.error"]
+        self.assertEqual(updates[-1]["translatedText"], "[translation failed]")
+        self.assertEqual(errors[-1]["code"], "TRANSLATION_FAILED")
+        self.assertTrue(errors[-1]["recoverable"])
+
+    async def test_continuation_remainder_stays_visible_as_current_tail(self) -> None:
+        translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
+        translation_queue.put_nowait(make_recognized("seg_001", "became so easy, the countries usually", 0.0))
+        translation_queue.put_nowait(make_recognized("seg_002", "overrelied on one sector. Then exports fell", 1.0))
+
+        events: list[tuple[str, dict]] = []
+
+        async def broadcast(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        translation = FakeTranslation()
+        with patch("app.real_pipeline.upsert_segment", lambda segment: None):
+            await _run_translation_processors(
+                session_id="session_test",
+                translation_queue=translation_queue,
+                translation=translation,
+                glossary_terms=[],
+                broadcast=broadcast,
+                should_stop=lambda: True,
+                concurrency=2,
+                diagnostics_enabled=True,
+            )
+
+        seg2_updates = [payload for event, payload in events if event == "segment.updated" and payload["id"] == "seg_002"]
+        self.assertEqual(seg2_updates[-1]["sourceText"], "Then exports fell")
+        self.assertIsNone(seg2_updates[-1].get("supersededBy"))
+        self.assertIn("became so easy, the countries usually overrelied on one sector.", translation.sources)
+        self.assertIn("Then exports fell", translation.sources)
+
+    async def test_translation_reorders_asr_results_before_continuation_logic(self) -> None:
+        translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
+        translation_queue.put_nowait(make_recognized("seg_002", "Second line.", 1.0))
+        translation_queue.put_nowait(make_recognized("seg_001", "First line.", 0.0))
+
+        events: list[tuple[str, dict]] = []
+
+        async def broadcast(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        translation = FakeTranslation()
+        with patch("app.real_pipeline.upsert_segment", lambda segment: None):
+            await _run_translation_processors(
+                session_id="session_test",
+                translation_queue=translation_queue,
+                translation=translation,
+                glossary_terms=[],
+                broadcast=broadcast,
+                should_stop=lambda: True,
+                concurrency=2,
+                diagnostics_enabled=True,
+            )
+
+        self.assertEqual(translation.sources[:2], ["First line.", "Second line."])
 
 
 if __name__ == "__main__":
