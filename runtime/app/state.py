@@ -80,7 +80,6 @@ class RuntimeState:
                 )
             )
         else:
-            # 真实模式：校验配置
             asr_key = get_asr_api_key(self.config)
             asr_url = get_asr_base_url(self.config)
             if not asr_key:
@@ -89,6 +88,13 @@ class RuntimeState:
                 raise ValueError("ASR Base URL 未配置，无法启动真实模式。")
             if not self.config.apiKey:
                 raise ValueError("翻译 API Key 未配置，无法启动真实模式。")
+            normalized_asr_url = asr_url.rstrip("/").lower()
+            if (
+                self.config.asrFormat == "chat-completions"
+                and "api.xiaomimimo.com" in normalized_asr_url
+                and not normalized_asr_url.endswith("/v1")
+            ):
+                raise ValueError("MiMo ASR Base URL 需要以 /v1 结尾，例如 https://api.xiaomimimo.com/v1。")
 
             glossary = list_glossary() if self.config.glossaryEnabled else []
 

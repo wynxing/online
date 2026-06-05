@@ -42,6 +42,12 @@ class RuntimeConfig(BaseModel):
     asrModel: str = "whisper-1"
     asrLanguage: str = "en"
     asrFormat: str = "whisper"  # "whisper" | "chat-completions"
+    asrConcurrency: int = Field(default=2, ge=1, le=8)
+    translationConcurrency: int = Field(default=3, ge=1, le=8)
+    segmentMinDuration: float = Field(default=1.2, ge=0.4, le=10.0)
+    segmentMaxDuration: float = Field(default=3.0, ge=0.8, le=20.0)
+    segmentSilenceDuration: float = Field(default=0.35, ge=0.1, le=3.0)
+    diagnosticsEnabled: bool = True
 
 
 class StartSessionRequest(BaseModel):
