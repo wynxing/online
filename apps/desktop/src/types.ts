@@ -20,6 +20,11 @@ export interface RuntimeConfig {
   displayMode: DisplayMode;
   fontSize: number;
   glossaryEnabled: boolean;
+  asrBaseUrl: string;
+  asrApiKey: string;
+  asrModel: string;
+  asrLanguage: string;
+  asrFormat: string;
 }
 
 export interface SubtitleSegment {
@@ -49,6 +54,12 @@ export interface GlossaryTerm {
   target: string;
   domain?: string;
   enabled: boolean;
+}
+
+export interface RuntimeErrorPayload {
+  code: string;
+  message: string;
+  recoverable: boolean;
 }
 
 export interface RuntimeEvent<T = unknown> {

@@ -38,6 +38,7 @@ import type {
   DisplayMode,
   GlossaryTerm,
   RuntimeConfig,
+  RuntimeErrorPayload,
   RuntimeEvent,
   SessionRecord,
   SubtitleSegment,
@@ -53,16 +54,28 @@ const defaultConfig: RuntimeConfig = {
   displayMode: "bilingual",
   fontSize: 24,
   glossaryEnabled: true,
+  asrBaseUrl: "",
+  asrApiKey: "",
+  asrModel: "whisper-1",
+  asrLanguage: "en",
+  asrFormat: "whisper",
 };
 
 type Tab = "console" | "settings" | "history" | "glossary";
 type RuntimeStatus = "checking" | "connected" | "disconnected";
+
+interface ErrorLogEntry {
+  code: string;
+  message: string;
+  time: string;
+}
 
 function useSubtitleSocket() {
   const [segments, setSegments] = useState<SubtitleSegment[]>([]);
   const [sessionStatus, setSessionStatus] = useState("idle");
   const [socketStatus, setSocketStatus] = useState<RuntimeStatus>("checking");
   const [correctedIds, setCorrectedIds] = useState<Set<string>>(new Set());
+  const [errorLog, setErrorLog] = useState<ErrorLogEntry[]>([]);
   const reconnectTimer = useRef<number>();
 
   useEffect(() => {
@@ -103,6 +116,14 @@ function useSubtitleSocket() {
               });
             }, 2200);
           }
+          return;
+        }
+        if (event.type === "runtime.error") {
+          const err = event.payload as RuntimeErrorPayload;
+          setErrorLog((prev) => [
+            { code: err.code, message: err.message, time: new Date().toLocaleTimeString() },
+            ...prev,
+          ]);
         }
       };
     };
@@ -121,6 +142,8 @@ function useSubtitleSocket() {
     sessionStatus,
     socketStatus,
     correctedIds,
+    errorLog,
+    setErrorLog,
   };
 }
 
@@ -144,7 +167,7 @@ function MainConsole() {
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
   const [notice, setNotice] = useState("Runtime 未检测");
   const subtitlePaneRef = useRef<HTMLDivElement>(null);
-  const { segments, setSegments, sessionStatus, socketStatus, correctedIds } = useSubtitleSocket();
+  const { segments, setSegments, sessionStatus, socketStatus, correctedIds, errorLog, setErrorLog } = useSubtitleSocket();
 
   const latestSegment =
     [...segments].reverse().find((segment) => segment.status !== "interim") ?? segments[segments.length - 1];
@@ -182,17 +205,38 @@ function MainConsole() {
   }
 
   async function handleStart() {
-    const record = await startSession({
-      inputDeviceId: config.defaultInputDeviceId,
-      sourceLang: "en",
-      targetLang: "zh-CN",
-      displayMode: config.displayMode,
-      asrProvider: config.asrProvider,
-      translationProvider: config.translationProvider,
-    });
-    setSegments([]);
-    setActiveSession(record);
-    setNotice("同传会话已启动");
+    // 真实模式前端校验
+    if (config.asrProvider !== "mock") {
+      const errors: string[] = [];
+      const asrKey = config.asrApiKey || config.apiKey;
+      const asrUrl = config.asrBaseUrl || config.baseUrl;
+      if (!asrUrl) errors.push("ASR 服务地址未配置");
+      if (!asrKey) errors.push("ASR API Key 未配置");
+      if (!config.apiKey) errors.push("翻译 API Key 未配置");
+      if (sourceDevice?.kind === "mock") errors.push("请选择真实的音频输入设备");
+      if (errors.length > 0) {
+        setNotice(`无法启动：${errors.join("；")}`);
+        return;
+      }
+    }
+
+    try {
+      const record = await startSession({
+        inputDeviceId: config.defaultInputDeviceId,
+        sourceLang: "en",
+        targetLang: "zh-CN",
+        displayMode: config.displayMode,
+        asrProvider: config.asrProvider,
+        translationProvider: config.translationProvider,
+      });
+      setSegments([]);
+      setErrorLog([]);
+      setActiveSession(record);
+      setNotice("同传会话已启动");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setNotice(`启动失败：${message}`);
+    }
   }
 
   async function handleStop() {
@@ -332,7 +376,11 @@ function MainConsole() {
                 </select>
               </label>
               <div className="device-note">
-                {sourceDevice?.description ?? "系统会优先使用 Windows loopback；不可用时自动进入演示流。"}
+                {sourceDevice?.kind === "system"
+                  ? "✓ 已选择系统音频 loopback，可采集播放声音"
+                  : sourceDevice?.kind === "microphone"
+                    ? "⚠ 当前选择的是麦克风，只能采集麦克风声音。要采集系统播放声音，请选择带 [Loopback] 的设备"
+                    : sourceDevice?.description ?? "请选择音频输入设备"}
               </div>
               <div className="segmented">
                 {(["source", "translated", "bilingual"] as DisplayMode[]).map((mode) => (
@@ -345,6 +393,16 @@ function MainConsole() {
                   </button>
                 ))}
               </div>
+              <label className="field">
+                <span>识别模式</span>
+                <select
+                  value={config.asrProvider}
+                  onChange={(event) => setConfig({ ...config, asrProvider: event.target.value })}
+                >
+                  <option value="mock">Mock 演示模式</option>
+                  <option value="openai-compatible">真实识别（OpenAI 兼容）</option>
+                </select>
+              </label>
               <div className="run-controls">
                 <button className="primary-button" disabled={isRunning} onClick={() => void handleStart()}>
                   <Play />
@@ -373,7 +431,19 @@ function MainConsole() {
                 <StatusPill label="会话" value={activeSession?.title ?? "未启动"} />
                 <StatusPill label="状态" value={sessionStatus} />
                 <StatusPill label="段数" value={String(segments.length)} />
+                <StatusPill label="模式" value={config.asrProvider === "mock" ? "Mock" : "真实"} />
               </div>
+              {errorLog.length > 0 && (
+                <div className="error-log">
+                  {errorLog.slice(0, 5).map((err, i) => (
+                    <div key={i} className="error-entry">
+                      <span className="error-time">{err.time}</span>
+                      <span className="error-code">{err.code}</span>
+                      <span className="error-msg">{err.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="subtitle-list" ref={subtitlePaneRef}>
                 {segments.length === 0 ? (
                   <EmptyState title="等待字幕流" body="启动会话后，mock 管线会模拟实时识别、翻译和修正事件。" />
@@ -409,8 +479,66 @@ function MainConsole() {
             <div className="form-panel">
               <div className="panel-heading">
                 <div>
-                  <span className="eyebrow">Provider</span>
-                  <h2>OpenAI 兼容服务</h2>
+                  <span className="eyebrow">ASR</span>
+                  <h2>语音识别服务</h2>
+                </div>
+                <SlidersHorizontal />
+              </div>
+              <label className="field">
+                <span>接口格式</span>
+                <select
+                  value={config.asrFormat}
+                  onChange={(event) => setConfig({ ...config, asrFormat: event.target.value })}
+                >
+                  <option value="whisper">Whisper（/v1/audio/transcriptions）</option>
+                  <option value="chat-completions">Chat Completions（/v1/chat/completions）</option>
+                </select>
+              </label>
+              <div className="device-note">
+                {config.asrFormat === "whisper"
+                  ? "Whisper 格式：音频以文件方式上传，适用于 OpenAI、Groq 等服务。"
+                  : "Chat Completions 格式：音频以 base64 编码发送，适用于小米 MiMo、智谱等国内服务。"}
+              </div>
+              <label className="field">
+                <span>ASR 服务地址</span>
+                <input
+                  value={config.asrBaseUrl}
+                  placeholder="留空则使用翻译服务地址"
+                  onChange={(event) => setConfig({ ...config, asrBaseUrl: event.target.value })}
+                />
+              </label>
+              <div className="device-note">
+                地址需要包含 /v1，例如：https://api.xiaomimimo.com/v1
+              </div>
+              <label className="field">
+                <span>ASR API Key</span>
+                <input
+                  type="password"
+                  value={config.asrApiKey}
+                  placeholder="留空则使用翻译服务 Key"
+                  onChange={(event) => setConfig({ ...config, asrApiKey: event.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>ASR 模型</span>
+                <input
+                  value={config.asrModel}
+                  onChange={(event) => setConfig({ ...config, asrModel: event.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>识别语言</span>
+                <input
+                  value={config.asrLanguage}
+                  placeholder="en / zh / auto"
+                  onChange={(event) => setConfig({ ...config, asrLanguage: event.target.value })}
+                />
+              </label>
+
+              <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
+                <div>
+                  <span className="eyebrow">Translation</span>
+                  <h2>翻译服务</h2>
                 </div>
                 <SlidersHorizontal />
               </div>
@@ -434,6 +562,13 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, translationModel: event.target.value })}
                 />
               </label>
+
+              <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
+                <div>
+                  <span className="eyebrow">Display</span>
+                  <h2>显示设置</h2>
+                </div>
+              </div>
               <label className="field">
                 <span>字幕字号</span>
                 <input

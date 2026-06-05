@@ -383,9 +383,46 @@ button:disabled {
 
 .session-strip {
   display: grid;
-  grid-template-columns: 1.4fr 0.8fr 0.6fr;
+  grid-template-columns: 1.4fr 0.8fr 0.6fr 0.8fr;
   gap: 10px;
   padding-bottom: 14px;
+}
+
+.error-log {
+  margin: 0 18px 10px;
+  border: 1px solid var(--red);
+  border-radius: 8px;
+  background: rgba(224, 107, 107, 0.08);
+  overflow: hidden;
+}
+
+.error-entry {
+  display: grid;
+  grid-template-columns: 70px 120px 1fr;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(224, 107, 107, 0.15);
+}
+
+.error-entry:last-child {
+  border-bottom: none;
+}
+
+.error-time {
+  color: var(--muted);
+}
+
+.error-code {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.error-msg {
+  color: var(--soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-pill {
