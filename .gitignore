@@ -1,0 +1,10 @@
+node_modules/
+dist/
+target/
+.venv/
+__pycache__/
+*.pyc
+runtime/data/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/*.exe
+build/

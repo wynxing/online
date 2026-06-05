@@ -1,0 +1,19 @@
+{
+  "name": "ai-simultaneous-interpretation-assistant",
+  "private": true,
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "runtime": "python runtime/run.py",
+    "desktop": "npm run dev -w apps/desktop",
+    "desktop:build": "npm run build -w apps/desktop",
+    "tauri": "npm run tauri -w apps/desktop",
+    "tauri:dev": "npm run tauri:dev -w apps/desktop",
+    "runtime:sidecar": "powershell -ExecutionPolicy Bypass -File scripts/build-runtime-sidecar.ps1",
+    "release:local": "powershell -ExecutionPolicy Bypass -File scripts/build-release-local.ps1"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}
