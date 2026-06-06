@@ -113,14 +113,6 @@ function preferLoopbackConfig(config: RuntimeConfig, devices: Device[]): Runtime
   return loopback ? { ...config, defaultInputDeviceId: loopback.id } : config;
 }
 
-function isMissingMimoV1(config: RuntimeConfig): boolean {
-  if (config.asrFormat !== "chat-completions") {
-    return false;
-  }
-  const asrUrl = (config.asrBaseUrl || config.baseUrl).trim().replace(/\/+$/, "").toLowerCase();
-  return asrUrl.includes("api.xiaomimimo.com") && !asrUrl.endsWith("/v1");
-}
-
 function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[] {
   return segments.filter((segment) => !segment.supersededBy);
 }
@@ -324,7 +316,6 @@ function MainConsole() {
       if (!asrUrl) errors.push("ASR 服务地址未配置");
       if (!asrKey) errors.push("ASR API Key 未配置");
       if (!config.apiKey) errors.push("翻译 API Key 未配置");
-      if (isMissingMimoV1(config)) errors.push("MiMo ASR 服务地址需要以 /v1 结尾，例如 https://api.xiaomimimo.com/v1");
       if (sourceDevice?.kind === "mock") errors.push("请选择真实的音频输入设备");
       if (errors.length > 0) {
         setNotice(`无法启动：${errors.join("；")}`);
@@ -517,7 +508,7 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, asrProvider: event.target.value })}
                 >
                   <option value="mock">Mock 演示模式</option>
-                  <option value="openai-compatible">真实识别（OpenAI 兼容）</option>
+                  <option value="openai-compatible">真实识别（兼容 API）</option>
                 </select>
               </label>
               <div className="run-controls">
@@ -608,14 +599,14 @@ function MainConsole() {
                   value={config.asrFormat}
                   onChange={(event) => setConfig({ ...config, asrFormat: event.target.value })}
                 >
-                  <option value="whisper">Whisper（/v1/audio/transcriptions）</option>
+                  <option value="whisper">标准 ASR（/v1/audio/transcriptions）</option>
                   <option value="chat-completions">Chat Completions（/v1/chat/completions）</option>
                 </select>
               </label>
               <div className="device-note">
                 {config.asrFormat === "whisper"
-                  ? "Whisper 格式：音频以文件方式上传，适用于 OpenAI、Groq 等服务。"
-                  : "Chat Completions 格式：音频以 base64 编码发送，适用于 MiMo 等兼容服务。"}
+                  ? "标准 ASR 格式：音频以文件方式上传，适用于兼容 Whisper API 的服务。"
+                  : "Chat Completions 格式：音频以 base64 编码发送，适用于兼容的 Chat Completions 服务。"}
               </div>
               <label className="field">
                 <span>ASR 服务地址</span>
@@ -625,7 +616,7 @@ function MainConsole() {
                   onChange={(event) => setConfig({ ...config, asrBaseUrl: event.target.value })}
                 />
               </label>
-              <div className="device-note">地址需要包含 /v1，例如：https://api.xiaomimimo.com/v1</div>
+              <div className="device-note">地址通常需要包含 /v1 后缀</div>
               <label className="field">
                 <span>ASR API Key</span>
                 <input
