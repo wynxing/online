@@ -15,6 +15,7 @@ import {
   Trash2,
   Wifi,
   WifiOff,
+  X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -922,11 +923,32 @@ function FloatingSubtitles() {
     window.localStorage.setItem("floatingDisplayMode", displayMode);
   }, [displayMode]);
 
+  async function handleClose() {
+    const tauriAvailable = "__TAURI_INTERNALS__" in window;
+    if (tauriAvailable) {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const current = WebviewWindow.getCurrent();
+      await current.close();
+      return;
+    }
+    window.close();
+  }
+
+  async function handleDragStart(e: React.MouseEvent) {
+    if (e.buttons !== 1) return;
+    if ((e.target as HTMLElement).closest("button")) return;
+    const tauriAvailable = "__TAURI_INTERNALS__" in window;
+    if (tauriAvailable) {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().startDragging();
+    }
+  }
+
   return (
     <div className="floating-shell">
-      <div className="floating-toolbar" data-tauri-drag-region>
+      <div className="floating-toolbar" onMouseDown={(e) => void handleDragStart(e)}>
         <span className={`status-dot ${socketStatus}`} />
-        <span data-tauri-drag-region>AI 同传字幕</span>
+        <span>AI 同传字幕</span>
         <div className="floating-modes">
           {(["source", "translated", "bilingual"] as DisplayMode[]).map((mode) => (
             <button
@@ -938,6 +960,9 @@ function FloatingSubtitles() {
             </button>
           ))}
         </div>
+        <button className="floating-close" onClick={() => void handleClose()} title="关闭浮窗">
+          <X />
+        </button>
       </div>
       <div className={`floating-card ${latest && correctedIds.has(latest.id) ? "corrected" : ""}`}>
         {latest ? (
