@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Awaitable, Callable
 
-from .asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider, pcm_to_wav
+from .asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider, pcm_to_wav, prepare_for_asr
 from .audio_capture import AudioCapture
 from .models import GlossaryTerm, RuntimeConfig, RuntimeErrorPayload, SubtitleSegment, SubtitleStatus
 from .segmenter import AudioSegment, AudioSegmenter
@@ -183,6 +183,7 @@ async def run_real_subtitle_pipeline(
             config.asrConcurrency,
             config.asrLanguage,
             config.diagnosticsEnabled,
+            asr_target_rate=config.asrTargetRate,
         )
     )
     translation_task = asyncio.create_task(
@@ -392,6 +393,7 @@ async def _run_asr_processors(
     concurrency: int,
     source_lang: str,
     diagnostics_enabled: bool,
+    asr_target_rate: int = 16000,
 ) -> None:
     recent_source: deque[str] = deque(maxlen=1)
     recent_lock = asyncio.Lock()
@@ -437,10 +439,16 @@ async def _run_asr_processors(
                 ),
             )
 
-            wav_bytes = pcm_to_wav(
+            pcm_data, channels, sample_rate = prepare_for_asr(
                 queued.segment.pcm_data,
                 channels=queued.segment.channels,
                 sample_rate=queued.segment.sample_rate,
+                target_rate=asr_target_rate,
+            )
+            wav_bytes = pcm_to_wav(
+                pcm_data,
+                channels=channels,
+                sample_rate=sample_rate,
             )
 
             async with recent_lock:

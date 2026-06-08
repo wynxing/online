@@ -5,11 +5,71 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import struct
 import wave
 
 import httpx
+import numpy as np
 
 logger = logging.getLogger("pipeline.asr")
+
+
+def prepare_for_asr(
+    pcm_data: bytes,
+    channels: int,
+    sample_rate: int,
+    target_rate: int = 16000,
+) -> tuple[bytes, int, int]:
+    """Convert PCM audio to mono and downsample for ASR.
+
+    Performs stereo-to-mono conversion (average L/R) and sample rate
+    reduction via decimation with a simple moving-average low-pass filter.
+
+    Args:
+        pcm_data: Raw 16-bit signed PCM bytes.
+        channels: Number of channels in the input audio.
+        sample_rate: Input sample rate in Hz.
+        target_rate: Target sample rate in Hz. 0 = no resampling (default 16000).
+
+    Returns:
+        (pcm_bytes, channels, sample_rate) — converted audio and its metadata.
+    """
+    if target_rate <= 0:
+        # Resampling disabled — still do stereo→mono
+        if channels == 2 and len(pcm_data) >= 4:
+            samples = np.frombuffer(pcm_data, dtype=np.int16)
+            stereo = samples.reshape(-1, 2)
+            samples = ((stereo[:, 0].astype(np.int32) + stereo[:, 1].astype(np.int32)) // 2).astype(np.int16)
+            return samples.tobytes(), 1, sample_rate
+        return pcm_data, channels, sample_rate
+
+    if sample_rate == target_rate and channels == 1:
+        return pcm_data, channels, sample_rate
+
+    samples = np.frombuffer(pcm_data, dtype=np.int16)
+
+    # Stereo → mono: average L/R pairs
+    if channels == 2 and len(samples) >= 2:
+        stereo = samples.reshape(-1, 2)
+        samples = ((stereo[:, 0].astype(np.int32) + stereo[:, 1].astype(np.int32)) // 2).astype(np.int16)
+        channels = 1
+
+    # Downsample if needed
+    if sample_rate != target_rate and len(samples) > 0:
+        ratio = sample_rate // target_rate
+        if ratio > 1 and len(samples) >= ratio:
+            # Simple moving-average low-pass filter to prevent aliasing
+            kernel_size = ratio
+            kernel = np.ones(kernel_size, dtype=np.float64) / kernel_size
+            filtered = np.convolve(samples.astype(np.float64), kernel, mode="same")
+            # Decimate: take every ratio-th sample
+            samples = filtered[::ratio].astype(np.int16)
+            sample_rate = target_rate
+
+    return samples.tobytes(), channels, sample_rate
+
+
+
 
 CHAT_ASR_SYSTEM_PROMPT = (
     "You are a speech-to-text engine. Transcribe the input audio in the requested source language. "

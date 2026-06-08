@@ -42,6 +42,7 @@ class RuntimeConfig(BaseModel):
     asrModel: str = "whisper-1"
     asrLanguage: str = "en"
     asrFormat: str = "whisper"  # "whisper" | "chat-completions"
+    asrTargetRate: int = Field(default=16000, ge=0, le=48000)  # 0 = no resampling
     asrConcurrency: int = Field(default=2, ge=1, le=8)
     translationConcurrency: int = Field(default=3, ge=1, le=8)
     segmentMinDuration: float = Field(default=1.2, ge=0.4, le=10.0)
