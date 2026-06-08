@@ -14,7 +14,7 @@ from .asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider
 from .audio_capture import AudioCapture
 from .models import GlossaryTerm, RuntimeConfig, RuntimeErrorPayload, SubtitleSegment, SubtitleStatus
 from .segmenter import AudioSegment, AudioSegmenter
-from .storage import upsert_segment
+from .storage import upsert_segment_async
 from .translation_provider import RealTranslationProvider, TranslationContext
 
 logger = logging.getLogger("pipeline.real")
@@ -38,6 +38,7 @@ _LATIN_RE = re.compile(r"[A-Za-z]")
 _SEGMENT_SEQUENCE_RE = re.compile(r"^seg_(\d+)$")
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"')\]]*(?:\s+|$)")
 _SENTENCE_END_RE = re.compile(r"[.!?…][\"')\]]*\s*$")
+_LONG_SEGMENT_BOUNDARY_RE = re.compile(r"[,;][\"')\]]*\s+(?=[A-Z])")
 _ROLE_PREFIX_RE = re.compile(
     r"^\s*(?:assistant|user|system|transcript|translation|answer)\s*[:：]\s*",
     re.IGNORECASE,
@@ -49,6 +50,16 @@ _LEADING_THINK_RE = re.compile(r"^\s*(?:think|reasoning|analysis)\s*(?:>|:|-)\s*
 _LEADING_LOWER_THINK_WORD_RE = re.compile(r"^\s*think\s+(?=[A-Z<])")
 _NUMERIC_NOISE_RE = re.compile(r"^\s*\d+\s*[A-Za-z]?\s*[\W_]*\s*$")
 _SHORT_MARKER_RE = re.compile(r"^\s*(?:[A-Za-z]|\d+[A-Za-z]?)\s*[\W_]*\s*$")
+_WHISPER_HALLUCINATIONS = {
+    "thank you", "thanks for watching", "subscribe",
+    "please subscribe", "like and subscribe", "please like",
+    "thank you for watching", "thank you for listening",
+    "bye", "goodbye", "see you", "see you next time",
+    "if you enjoyed", "don't forget to",
+    "welcome back", "hello everyone",
+    "[music]", "[applause]", "[laughter]",
+    "you", "um", "uh", "ah", "hmm",
+}
 
 
 @dataclass
@@ -307,6 +318,11 @@ def sanitize_asr_text(raw_text: str, source_lang: str = "en") -> SanitizedASRTex
 
     if _NUMERIC_NOISE_RE.match(text) or _SHORT_MARKER_RE.match(text) or not any(ch.isalpha() for ch in text):
         return SanitizedASRText(text="", reject_reason="numeric_or_symbol_noise")
+
+    # Whisper hallucination detection
+    text_lower = text.lower().strip(".,!?;:")
+    if text_lower in _WHISPER_HALLUCINATIONS:
+        return SanitizedASRText(text="", reject_reason="whisper_hallucination")
 
     latin_count = len(_LATIN_RE.findall(text))
     cjk_count = len(_CJK_RE.findall(text))
@@ -579,7 +595,7 @@ async def _run_translation_processors(
     concurrency: int,
     diagnostics_enabled: bool,
 ) -> None:
-    context: deque[TranslationContext] = deque(maxlen=2)
+    context: deque[TranslationContext] = deque(maxlen=4)
     context_lock = asyncio.Lock()
     ready_buffer: deque[RecognizedSegment] = deque()
     pending: dict[int, RecognizedSegment] = {}
@@ -791,6 +807,34 @@ async def _run_translation_processors(
             next_sequence = next_available
         return ready
 
+    # Dynamic concurrency monitoring
+    TRANSLATION_BACKLOG_THRESHOLD = 3
+    TRANSLATION_MAX_CONCURRENCY = 6
+    _extra_slots_added = 0
+
+    async def _monitor_backlog() -> None:
+        nonlocal _extra_slots_added
+        while not should_stop():
+            await asyncio.sleep(2.0)
+            backlog = translation_queue.qsize() + len(pending) + len(scheduled_tasks)
+            if backlog >= TRANSLATION_BACKLOG_THRESHOLD and _extra_slots_added < 2:
+                # Scale up: add extra worker slots
+                worker_slots.put_nowait(max_concurrency + _extra_slots_added + 1)
+                _extra_slots_added += 1
+                logger.info(
+                    "Translation scale up: backlog=%d, extraSlots=%d",
+                    backlog, _extra_slots_added,
+                )
+            elif backlog == 0 and _extra_slots_added > 0:
+                # Scale down: just log (extra slots will be returned as workers finish)
+                logger.info(
+                    "Translation scale down: backlog=%d, extraSlots=%d",
+                    backlog, _extra_slots_added,
+                )
+                _extra_slots_added = 0
+
+    backlog_monitor = asyncio.create_task(_monitor_backlog())
+
     try:
         while not should_stop() or not translation_queue.empty() or pending or ready_buffer or scheduled_tasks:
             force_order = should_stop() and translation_queue.empty()
@@ -812,6 +856,8 @@ async def _run_translation_processors(
         for task in scheduled_tasks.values():
             task.cancel()
         return
+    finally:
+        backlog_monitor.cancel()
     await drain_scheduled(block=True)
 
 
@@ -852,13 +898,46 @@ async def _translate_segment(
     async with context_lock:
         context_snapshot = list(context)
 
+    # Streaming translation state
+    accumulated_text = ""
+    last_stream_time = loop.time()
+    pending_token_count = 0
+    STREAM_MIN_TOKENS = 3
+    STREAM_MAX_INTERVAL = 0.15
+    STREAM_MIN_INTERVAL = 0.03
+
+    async def on_stream_token(token: str) -> None:
+        """Callback for streaming translation tokens."""
+        nonlocal accumulated_text, last_stream_time, pending_token_count
+        accumulated_text += token
+        pending_token_count += 1
+        now = loop.time()
+        elapsed = now - last_stream_time
+        if (
+            pending_token_count >= STREAM_MIN_TOKENS
+            or elapsed >= STREAM_MAX_INTERVAL
+        ) and elapsed >= STREAM_MIN_INTERVAL:
+            last_stream_time = now
+            pending_token_count = 0
+            await broadcast(
+                "segment.streaming",
+                {
+                    "id": item.segment.id,
+                    "sessionId": session_id,
+                    "translatedText": accumulated_text,
+                    "status": "streaming",
+                },
+            )
+
     try:
-        translated_text = await translation.translate(
+        # Use streaming translation for real-time updates
+        translated_text = await translation.translate_streaming(
             source_text=source_text,
             source_lang="en",
             target_lang="zh-CN",
             glossary_terms=glossary_terms,
             context=context_snapshot,
+            on_token=on_stream_token,
         )
     except Exception as e:
         logger.warning("Translation failed: segment=%s, error=%s", item.segment.id, e)
@@ -908,7 +987,7 @@ async def _emit_translation_result(
         _elapsed_ms(result.item.timing.translation_started_at, result.item.timing.translation_finished_at),
         _elapsed_ms(result.item.timing.segment_queued_at, result.item.timing.translation_finished_at),
     )
-    upsert_segment(result.final)
+    await upsert_segment_async(result.final)
     await broadcast(result.event_type, result.final.model_dump(mode="json"))
     await _emit_metrics(
         broadcast,
@@ -975,16 +1054,28 @@ def _segment_sequence(segment_id: str) -> int:
 
 
 def _is_sentence_complete(source_text: str) -> bool:
-    return bool(_SENTENCE_END_RE.search(source_text.strip()))
+    text = source_text.strip()
+    if _SENTENCE_END_RE.search(text):
+        return True
+    # Long segments with a comma boundary are also considered "complete enough"
+    if len(text) > 80 and _LONG_SEGMENT_BOUNDARY_RE.search(text):
+        return True
+    return False
 
 
 def _split_first_sentence(source_text: str) -> tuple[str | None, str]:
-    match = _SENTENCE_BOUNDARY_RE.search(source_text.strip())
-    if not match:
-        return None, ""
-    end = match.end()
     text = source_text.strip()
-    return text[:end].strip(), text[end:].strip()
+    match = _SENTENCE_BOUNDARY_RE.search(text)
+    if match:
+        end = match.end()
+        return text[:end].strip(), text[end:].strip()
+    # For long segments, try comma boundary as fallback
+    if len(text) > 80:
+        comma_match = _LONG_SEGMENT_BOUNDARY_RE.search(text)
+        if comma_match:
+            end = comma_match.end()
+            return text[:end].strip(), text[end:].strip()
+    return None, ""
 
 
 def _join_source_text(*parts: str) -> str:

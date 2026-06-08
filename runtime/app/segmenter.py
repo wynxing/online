@@ -135,23 +135,21 @@ class AudioSegmenter:
         return segment
 
     def _reset_buffer(self) -> None:
-        self._buffer = bytearray()
+        self._buffer.clear()  # Reuse existing buffer allocation
         self._start_time = self._current_time
         self._last_silence_start = None
 
 
-def _is_silence(pcm_bytes: bytes, threshold: float) -> bool:
-    return _rms(pcm_bytes) < threshold
-
-
-def _segment_rms(pcm_bytes: bytes) -> float:
-    return _rms(pcm_bytes)
-
-
 def _rms(pcm_bytes: bytes) -> float:
+    """Compute Root Mean Square of 16-bit PCM audio.
+
+    Uses integer arithmetic to avoid intermediate float32 allocations.
+    """
     if len(pcm_bytes) < 2:
         return 0.0
     samples = np.frombuffer(pcm_bytes, dtype=np.int16)
     if len(samples) == 0:
         return 0.0
-    return float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+    # Use int64 accumulation to avoid overflow and reduce allocations
+    sum_sq = np.sum(samples.astype(np.int64) ** 2)
+    return float(np.sqrt(sum_sq / len(samples)))

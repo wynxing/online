@@ -9,6 +9,16 @@ from typing import Iterable
 
 from .models import GlossaryTerm, RuntimeConfig, SessionRecord, SubtitleSegment
 
+# Async SQLite support
+try:
+    import aiosqlite
+    HAS_AIOSQLITE = True
+except ImportError:
+    HAS_AIOSQLITE = False
+
+# Async database connection (lazy singleton)
+_async_db: "aiosqlite.Connection | None" = None
+
 
 LEGACY_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 DATA_DIR = Path(os.environ.get("ONLINE_DATA_DIR", Path.home() / ".online")).expanduser()
@@ -32,6 +42,26 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+async def _get_async_db():
+    """Get or create a persistent async database connection."""
+    global _async_db
+    if _async_db is None:
+        if not HAS_AIOSQLITE:
+            raise RuntimeError("aiosqlite is required for async storage operations")
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _async_db = await aiosqlite.connect(DB_PATH)
+        _async_db.row_factory = aiosqlite.Row
+    return _async_db
+
+
+async def close_async_db() -> None:
+    """Close the async database connection."""
+    global _async_db
+    if _async_db is not None:
+        await _async_db.close()
+        _async_db = None
 
 
 def init_storage() -> None:
@@ -169,6 +199,42 @@ def upsert_segment(segment: SubtitleSegment) -> None:
                 segment.updatedAt,
             ),
         )
+
+
+async def upsert_segment_async(segment: SubtitleSegment) -> None:
+    """Async version of upsert_segment for non-blocking database access.
+
+    Uses a single SQL statement with version guard to minimize round-trips.
+    """
+    db = await _get_async_db()
+    await db.execute(
+        """
+        INSERT INTO subtitle_segments
+        (id, session_id, source_text, translated_text, status, version, start_time, end_time, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id, session_id) DO UPDATE SET
+            source_text = excluded.source_text,
+            translated_text = excluded.translated_text,
+            status = excluded.status,
+            version = excluded.version,
+            start_time = excluded.start_time,
+            end_time = excluded.end_time,
+            updated_at = excluded.updated_at
+        WHERE excluded.version >= subtitle_segments.version
+        """,
+        (
+            segment.id,
+            segment.sessionId,
+            segment.sourceText,
+            segment.translatedText,
+            segment.status.value,
+            segment.version,
+            segment.startTime,
+            segment.endTime,
+            segment.updatedAt,
+        ),
+    )
+    await db.commit()
 
 
 def list_segments(session_id: str) -> list[SubtitleSegment]:

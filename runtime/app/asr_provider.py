@@ -6,12 +6,35 @@ import base64
 import io
 import logging
 import struct
-import wave
 
 import httpx
 import numpy as np
 
 logger = logging.getLogger("pipeline.asr")
+
+# Cache for resampling kernels to avoid recomputing on every call
+_RESAMPLE_KERNELS: dict[tuple[int, int], tuple[np.ndarray, int]] = {}
+
+
+def _get_resample_kernel(sample_rate: int, target_rate: int) -> tuple[np.ndarray, int]:
+    """Get or create a cached resampling kernel for the given sample rate pair."""
+    key = (sample_rate, target_rate)
+    if key not in _RESAMPLE_KERNELS:
+        ratio = sample_rate // target_rate
+        kernel_size = ratio
+        kernel = np.ones(kernel_size, dtype=np.float64) / kernel_size
+        _RESAMPLE_KERNELS[key] = (kernel, ratio)
+    return _RESAMPLE_KERNELS[key]
+
+
+def stereo_to_mono(pcm_bytes: bytes) -> bytes:
+    """Convert stereo 16-bit PCM to mono by averaging L/R channels."""
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16)
+    if len(samples) < 2:
+        return pcm_bytes
+    stereo = samples.reshape(-1, 2)
+    mono = ((stereo[:, 0].astype(np.int32) + stereo[:, 1].astype(np.int32)) // 2).astype(np.int16)
+    return mono.tobytes()
 
 
 def prepare_for_asr(
@@ -37,10 +60,7 @@ def prepare_for_asr(
     if target_rate <= 0:
         # Resampling disabled — still do stereo→mono
         if channels == 2 and len(pcm_data) >= 4:
-            samples = np.frombuffer(pcm_data, dtype=np.int16)
-            stereo = samples.reshape(-1, 2)
-            samples = ((stereo[:, 0].astype(np.int32) + stereo[:, 1].astype(np.int32)) // 2).astype(np.int16)
-            return samples.tobytes(), 1, sample_rate
+            return stereo_to_mono(pcm_data), 1, sample_rate
         return pcm_data, channels, sample_rate
 
     if sample_rate == target_rate and channels == 1:
@@ -58,12 +78,11 @@ def prepare_for_asr(
     if sample_rate != target_rate and len(samples) > 0:
         ratio = sample_rate // target_rate
         if ratio > 1 and len(samples) >= ratio:
-            # Simple moving-average low-pass filter to prevent aliasing
-            kernel_size = ratio
-            kernel = np.ones(kernel_size, dtype=np.float64) / kernel_size
-            filtered = np.convolve(samples.astype(np.float64), kernel, mode="same")
-            # Decimate: take every ratio-th sample
-            samples = filtered[::ratio].astype(np.int16)
+            # Block-average decimation: reshape into blocks and average
+            # Equivalent to moving-average low-pass + decimation, but faster
+            trim_len = (len(samples) // ratio) * ratio
+            blocks = samples[:trim_len].reshape(-1, ratio)
+            samples = blocks.mean(axis=1).astype(np.int16)
             sample_rate = target_rate
 
     return samples.tobytes(), channels, sample_rate
@@ -85,7 +104,14 @@ class OpenAICompatibleASRProvider:
         self._api_key = api_key
         self._model = model
         self._language = language
-        self._client = httpx.AsyncClient(timeout=15.0)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=3.0),
+            limits=httpx.Limits(
+                max_connections=8,
+                max_keepalive_connections=4,
+                keepalive_expiry=30.0,
+            ),
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -133,7 +159,14 @@ class ChatCompletionASRProvider:
         self._api_key = api_key
         self._model = model
         self._language = language
-        self._client = httpx.AsyncClient(timeout=15.0)
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=3.0),
+            limits=httpx.Limits(
+                max_connections=8,
+                max_keepalive_connections=4,
+                keepalive_expiry=30.0,
+            ),
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -193,11 +226,19 @@ class ChatCompletionASRProvider:
 
 
 def pcm_to_wav(pcm_data: bytes, channels: int = 2, sample_rate: int = 48000, sample_width: int = 2) -> bytes:
-    """Convert PCM bytes to an in-memory WAV file."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(sample_width)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm_data)
-    return buf.getvalue()
+    """Convert PCM bytes to an in-memory WAV file.
+
+    Uses struct.pack for faster header construction compared to the wave module.
+    """
+    data_size = len(pcm_data)
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+
+    # RIFF header (12 bytes)
+    header = struct.pack('<4sI4s', b'RIFF', 36 + data_size, b'WAVE')
+    # fmt chunk (24 bytes)
+    fmt = struct.pack('<4sIHHIIHH', b'fmt ', 16, 1, channels, sample_rate, byte_rate, block_align, sample_width * 8)
+    # data chunk header (8 bytes)
+    data_header = struct.pack('<4sI', b'data', data_size)
+
+    return header + fmt + data_header + pcm_data

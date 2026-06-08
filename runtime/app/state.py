@@ -33,13 +33,23 @@ class WebSocketHub:
             self._clients.discard(websocket)
 
     async def broadcast(self, event_type: str, payload: dict) -> None:
+        """Broadcast event to all connected clients concurrently."""
         async with self._lock:
             clients = list(self._clients)
-        for client in clients:
+
+        if not clients:
+            return
+
+        message = {"type": event_type, "payload": payload}
+
+        async def send_to_client(client: WebSocket) -> None:
             try:
-                await client.send_json({"type": event_type, "payload": payload})
+                await client.send_json(message)
             except Exception:
                 await self.disconnect(client)
+
+        # Send to all clients concurrently
+        await asyncio.gather(*[send_to_client(c) for c in clients], return_exceptions=True)
 
 
 @dataclass
