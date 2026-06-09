@@ -55,7 +55,21 @@ jobs:
         run: npm ci
 
       - name: Install runtime dependencies
-        run: python -m pip install -r runtime\requirements.txt
+        run: |
+          python -m pip install -r runtime\requirements.txt
+          python -m pip install -r runtime\requirements-dev.txt
+
+      - name: Frontend lint
+        run: npm run lint
+
+      - name: Frontend test
+        run: npm run test
+
+      - name: Runtime lint
+        run: cd runtime && python -m ruff check app/ tests/
+
+      - name: Runtime test
+        run: cd runtime && python -m pytest tests/ -v --tb=short
 
       - name: Build Python runtime sidecar
         shell: pwsh
