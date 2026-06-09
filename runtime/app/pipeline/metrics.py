@@ -9,8 +9,8 @@ from .utils import duration_ms, elapsed_ms, now_iso
 
 if TYPE_CHECKING:
     from ..models import SubtitleSegment
+    from ..segmenter import AudioSegment
     from .asr_worker import SegmentTiming
-    from .segment_processor import AudioSegment
 
 logger = logging.getLogger("pipeline.metrics")
 
@@ -32,7 +32,7 @@ def segment_metrics_payload(
     queue_lag_ms: float | None = None,
 ) -> dict:
     """Build a metrics payload dict for a pipeline event."""
-    from .segment_processor import AudioSegment  # avoid circular at module level
+    from ..segmenter import AudioSegment  # avoid circular at module level
 
     if isinstance(segment, AudioSegment):
         audio_start = segment.start_time

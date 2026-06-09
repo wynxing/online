@@ -65,8 +65,8 @@ def put_latest(queue: asyncio.Queue, item: object, label: str) -> object | None:
 
 def segment_metadata(item: object) -> tuple[str, float, float] | None:
     """Extract (id, start, end) from various pipeline item types."""
+    from ..segmenter import AudioSegment  # avoid circular import
     from .asr_worker import QueuedAudioSegment  # avoid circular import
-    from .segment_processor import AudioSegment  # avoid circular import
 
     if isinstance(item, QueuedAudioSegment):
         return item.segment_id, item.segment.start_time, item.segment.end_time
