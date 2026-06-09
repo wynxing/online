@@ -1,5 +1,5 @@
 import { Activity, BookOpen, ExternalLink, History, Settings, Wifi, WifiOff } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   createGlossaryTerm,
   deleteGlossaryTerm,
@@ -68,7 +68,9 @@ function preferLoopbackConfig(config: RuntimeConfig, devices: Device[]): Runtime
   if (selected?.kind === "system") {
     return config;
   }
-  const loopback = devices.find((device) => device.kind === "system" && device.id.startsWith("wasapi_loopback_"));
+  const loopback = devices.find(
+    (device) => device.kind === "system" && device.id.startsWith("wasapi_loopback_")
+  );
   return loopback ? { ...config, defaultInputDeviceId: loopback.id } : config;
 }
 
@@ -96,7 +98,11 @@ function MainConsole() {
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
   const [notice, setNotice] = useState("Runtime 未检测");
   const [testing, setTesting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{ kind: string; ok: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    kind: string;
+    ok: boolean;
+    message: string;
+  } | null>(null);
   const {
     segments,
     setSegments,
@@ -113,32 +119,56 @@ function MainConsole() {
   const sourceDevice = devices.find((device) => device.id === config.defaultInputDeviceId);
   const isRunning = sessionStatus === "running";
 
+  const bootstrapId = useRef(0);
+
   useEffect(() => {
     void bootstrap();
   }, []);
 
-  async function bootstrap() {
-    try {
-      await health();
-      const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all([
-        getConfig(),
-        getDevices(),
-        getGlossary(),
-        getSessions(),
-      ]);
-      setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
-      setDevices(runtimeDevices);
-      setGlossary(runtimeGlossary);
-      setSessions(runtimeSessions);
-      setNotice("Runtime 已连接");
-    } catch (error: unknown) {
-      const message =
-        error instanceof TypeError
-          ? "后端未运行，请先启动 Runtime（端口 8765）"
-          : error instanceof Error
-            ? error.message
-            : String(error);
-      setNotice(`Runtime 未启动：${message}`);
+  // 设备列表轮询：Runtime 已连接后每 5 秒刷新一次
+  useEffect(() => {
+    if (notice !== "Runtime 已连接") return;
+    const timer = window.setInterval(() => {
+      void getDevices()
+        .then(setDevices)
+        .catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [notice]);
+
+  async function bootstrap(retries = 20, delayMs = 1000) {
+    const id = ++bootstrapId.current;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      // 如果更新的 bootstrap 已经启动，放弃当前循环
+      if (id !== bootstrapId.current) return;
+      try {
+        await health();
+        if (id !== bootstrapId.current) return;
+        const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all(
+          [getConfig(), getDevices(), getGlossary(), getSessions()]
+        );
+        if (id !== bootstrapId.current) return;
+        setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
+        setDevices(runtimeDevices);
+        setGlossary(runtimeGlossary);
+        setSessions(runtimeSessions);
+        setNotice("Runtime 已连接");
+        return;
+      } catch (error: unknown) {
+        if (id !== bootstrapId.current) return;
+        if (attempt < retries) {
+          setNotice(`Runtime 启动中... (${attempt}/${retries})`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+        const message =
+          error instanceof TypeError
+            ? "后端未运行，请先启动 Runtime（端口 8765）"
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        setNotice(`Runtime 未启动：${message}`);
+      }
     }
   }
 
@@ -239,7 +269,9 @@ function MainConsole() {
       domain: newTerm.domain.trim() || undefined,
       enabled: true,
     });
-    setGlossary((current) => [...current, created].sort((a, b) => a.source.localeCompare(b.source)));
+    setGlossary((current) =>
+      [...current, created].sort((a, b) => a.source.localeCompare(b.source))
+    );
     setNewTerm({ source: "", target: "", domain: "" });
   }
 
@@ -260,7 +292,11 @@ function MainConsole() {
       const res = await testAsr(config);
       setTestResult({ kind: "asr", ok: true, message: `连接正常：${res.base_url}` });
     } catch (err) {
-      setTestResult({ kind: "asr", ok: false, message: err instanceof Error ? err.message : String(err) });
+      setTestResult({
+        kind: "asr",
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setTesting(null);
     }
@@ -271,9 +307,17 @@ function MainConsole() {
     setTestResult(null);
     try {
       const res = await testTranslation(config);
-      setTestResult({ kind: "translation", ok: true, message: `连接正常，示例翻译：${res.sample}` });
+      setTestResult({
+        kind: "translation",
+        ok: true,
+        message: `连接正常，示例翻译：${res.sample}`,
+      });
     } catch (err) {
-      setTestResult({ kind: "translation", ok: false, message: err instanceof Error ? err.message : String(err) });
+      setTestResult({
+        kind: "translation",
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setTesting(null);
     }
@@ -297,15 +341,45 @@ function MainConsole() {
           </div>
         </div>
         <nav className="nav-list">
-          <NavButton active={tab === "console"} icon={<Activity />} label="控制台" onClick={() => setTab("console")} />
-          <NavButton active={tab === "settings"} icon={<Settings />} label="设置" onClick={() => setTab("settings")} />
-          <NavButton active={tab === "history"} icon={<History />} label="历史" onClick={() => setTab("history")} />
-          <NavButton active={tab === "glossary"} icon={<BookOpen />} label="术语表" onClick={() => setTab("glossary")} />
+          <NavButton
+            active={tab === "console"}
+            icon={<Activity />}
+            label="控制台"
+            onClick={() => setTab("console")}
+          />
+          <NavButton
+            active={tab === "settings"}
+            icon={<Settings />}
+            label="设置"
+            onClick={() => setTab("settings")}
+          />
+          <NavButton
+            active={tab === "history"}
+            icon={<History />}
+            label="历史"
+            onClick={() => setTab("history")}
+          />
+          <NavButton
+            active={tab === "glossary"}
+            icon={<BookOpen />}
+            label="术语表"
+            onClick={() => setTab("glossary")}
+          />
         </nav>
         <div className="runtime-card">
-          <span className={`status-dot ${socketStatus}`} />
+          <span
+            className={`status-dot ${socketStatus === "connected" && notice === "Runtime 已连接" ? "connected" : socketStatus}`}
+          />
           <div>
-            <strong>{socketStatus === "connected" ? "WebSocket 在线" : "WebSocket 离线"}</strong>
+            <strong>
+              {notice === "Runtime 已连接"
+                ? "Runtime 在线"
+                : notice.startsWith("Runtime 启动中")
+                  ? "Runtime 启动中"
+                  : socketStatus === "connected"
+                    ? "WebSocket 在线"
+                    : "WebSocket 离线"}
+            </strong>
             <span>{notice}</span>
           </div>
         </div>
@@ -318,7 +392,11 @@ function MainConsole() {
             <h1>{tabTitle[tab]}</h1>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" onClick={() => void bootstrap()} title="刷新 Runtime 状态">
+            <button
+              className="icon-button"
+              onClick={() => void bootstrap()}
+              title="刷新 Runtime 状态"
+            >
               {socketStatus === "connected" ? <Wifi /> : <WifiOff />}
             </button>
             <button className="secondary-button" onClick={() => void openFloatingWindow()}>
@@ -355,7 +433,9 @@ function MainConsole() {
               <span className="eyebrow">Latest Stable</span>
               {visibleSegments.length > 0 ? (
                 (() => {
-                  const latest = [...visibleSegments].reverse().find((s) => s.status !== "interim") ?? visibleSegments[visibleSegments.length - 1];
+                  const latest =
+                    [...visibleSegments].reverse().find((s) => s.status !== "interim") ??
+                    visibleSegments[visibleSegments.length - 1];
                   return (
                     <>
                       <p className="latest-source">{latest.sourceText}</p>
