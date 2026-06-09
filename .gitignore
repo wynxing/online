@@ -9,3 +9,8 @@ apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/*.exe
 build/
 .codebuddy/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+.vitest/
