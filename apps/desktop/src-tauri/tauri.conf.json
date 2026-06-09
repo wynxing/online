@@ -45,7 +45,7 @@
       "endpoints": [
         "https://github.com/wynxing/online/releases/latest/download/latest.json"
       ],
-      "pubkey": "REPLACE_WITH_YOUR_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM3M0JGNTIzMjU0RjFFRjIKUldUeUhrOGxJL1U3eHh1VmtHeGVQTDRoQjJmRU5uR0NndzJzVjBUTEE4MjVZOG42NGxySlA1T3YK",
       "windows": {
         "installMode": "passive"
       }
