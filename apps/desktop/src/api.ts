@@ -6,8 +6,11 @@ import type {
   SubtitleSegment,
 } from "./types";
 
-export const RUNTIME_HTTP = "http://127.0.0.1:8765";
-export const RUNTIME_WS = "ws://127.0.0.1:8765/ws/subtitles";
+const isDev = import.meta.env.DEV;
+export const RUNTIME_HTTP = isDev ? "" : "http://127.0.0.1:8765";
+export const RUNTIME_WS = isDev
+  ? `ws://${window.location.host}/ws/subtitles`
+  : "ws://127.0.0.1:8765/ws/subtitles";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${RUNTIME_HTTP}${path}`, {

@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles.css";
 
 if (new URLSearchParams(window.location.search).get("view") === "floating") {
@@ -8,5 +9,7 @@ if (new URLSearchParams(window.location.search).get("view") === "floating") {
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <App />,
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
 );

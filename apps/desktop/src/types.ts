@@ -1,5 +1,7 @@
 export type DisplayMode = "source" | "translated" | "bilingual";
 export type SubtitleStatus = "interim" | "final" | "corrected";
+export type Tab = "console" | "settings" | "history" | "glossary";
+export type RuntimeStatus = "checking" | "connected" | "disconnected";
 
 export interface Device {
   id: string;
@@ -100,4 +102,23 @@ export interface PipelineMetricsPayload {
 export interface RuntimeEvent<T = unknown> {
   type: string;
   payload: T;
+}
+
+export interface PipelineDiagnostics {
+  latestSegmentId?: string;
+  latestAsrMs?: number;
+  latestTranslationMs?: number;
+  latestEndToEndMs?: number;
+  segmentQueueSize?: number;
+  translationQueueSize?: number;
+  droppedCount: number;
+  lastDropReason?: string;
+  lowEnergyDrops: number;
+  maxFrameRms?: number;
+}
+
+export interface ErrorLogEntry {
+  code: string;
+  message: string;
+  time: string;
 }
