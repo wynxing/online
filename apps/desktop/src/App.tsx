@@ -6,9 +6,11 @@ import {
   getConfig,
   getDevices,
   getGlossary,
+  getRuntimeStatus,
   getSessionSegments,
   getSessions,
   health,
+  restartRuntime,
   saveConfig,
   startSession,
   stopSession,
@@ -99,6 +101,7 @@ function MainConsole() {
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
   const [notice, setNotice] = useState("Runtime 未检测");
+  const [restarting, setRestarting] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     kind: string;
@@ -147,10 +150,32 @@ function MainConsole() {
     return () => window.clearInterval(timer);
   }, [notice]);
 
-  async function bootstrap(retries = 20, delayMs = 1000) {
+  async function bootstrap(retries = 15, delayMs = 1000) {
     const id = ++bootstrapId.current;
+
+    // 检查 sidecar 进程状态（仅在非 dev 模式下有意义）
+    try {
+      const status = await getRuntimeStatus();
+      if (id !== bootstrapId.current) return;
+
+      if (!status.alive && status.error) {
+        // sidecar 启动失败，有明确错误信息（如二进制文件缺失）
+        setNotice(`Runtime 启动失败：${status.error}`);
+        return;
+      }
+
+      if (!status.alive && !status.error) {
+        // sidecar 进程不在运行，尝试重新启动
+        setNotice("Runtime 进程未运行，正在重新启动...");
+        await restartRuntime();
+        if (id !== bootstrapId.current) return;
+      }
+    } catch {
+      // invoke 失败（如在 dev 模式），跳过 sidecar 检查，直接尝试健康检查
+    }
+
+    // 轮询 HTTP 健康检查，等待 Runtime 就绪
     for (let attempt = 1; attempt <= retries; attempt++) {
-      // 如果更新的 bootstrap 已经启动，放弃当前循环
       if (id !== bootstrapId.current) return;
       try {
         await health();
@@ -174,12 +199,22 @@ function MainConsole() {
         }
         const message =
           error instanceof TypeError
-            ? "后端未运行，请先启动 Runtime（端口 8765）"
+            ? "Runtime 无响应，请检查端口 8765 或重启应用"
             : error instanceof Error
               ? error.message
               : String(error);
-        setNotice(`Runtime 未启动：${message}`);
+        setNotice(`Runtime 未就绪：${message}`);
       }
+    }
+  }
+
+  async function handleRestartRuntime() {
+    setRestarting(true);
+    try {
+      await restartRuntime();
+      await bootstrap();
+    } finally {
+      setRestarting(false);
     }
   }
 
@@ -215,7 +250,7 @@ function MainConsole() {
     } catch (err: unknown) {
       const message =
         err instanceof TypeError
-          ? "后端未运行，请先启动 Runtime（端口 8765）"
+          ? "Runtime 无响应，请检查端口 8765 或重启应用"
           : err instanceof Error
             ? err.message
             : String(err);
@@ -387,11 +422,22 @@ function MainConsole() {
                 ? "Runtime 在线"
                 : notice.startsWith("Runtime 启动中")
                   ? "Runtime 启动中"
-                  : socketStatus === "connected"
-                    ? "WebSocket 在线"
-                    : "WebSocket 离线"}
+                  : notice.includes("启动失败") || notice.includes("未就绪")
+                    ? "Runtime 离线"
+                    : socketStatus === "connected"
+                      ? "WebSocket 在线"
+                      : "WebSocket 离线"}
             </strong>
             <span>{notice}</span>
+            {(notice.includes("启动失败") || notice.includes("未就绪")) && (
+              <button
+                className="restart-btn"
+                onClick={() => void handleRestartRuntime()}
+                disabled={restarting}
+              >
+                {restarting ? "重启中..." : "重新启动"}
+              </button>
+            )}
           </div>
         </div>
       </aside>

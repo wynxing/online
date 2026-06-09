@@ -6,37 +6,51 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
-#[derive(Default)]
-struct RuntimeProcess(Mutex<Option<CommandChild>>);
+struct RuntimeProcess {
+    child: Mutex<Option<CommandChild>>,
+    last_error: Mutex<Option<String>>,
+}
 
-fn start_runtime_sidecar(app: &tauri::App) {
-    let handle = app.handle().clone();
-    tauri::async_runtime::spawn(async move {
-        let command = match handle
-            .shell()
-            .sidecar("ai-interpretation-runtime")
-        {
-            Ok(command) => command.env("ONLINE_RUNTIME_RELOAD", "0"),
-            Err(error) => {
-                eprintln!("Runtime sidecar is not available: {error}");
-                return;
-            }
-        };
-
-        let (mut rx, child) = match command.spawn() {
-            Ok(process) => process,
-            Err(error) => {
-                eprintln!("Failed to start runtime sidecar: {error}");
-                return;
-            }
-        };
-
-        {
-            let state = handle.state::<RuntimeProcess>();
-            let mut guard = state.0.lock().expect("runtime process mutex poisoned");
-            *guard = Some(child);
+impl Default for RuntimeProcess {
+    fn default() -> Self {
+        Self {
+            child: Mutex::new(None),
+            last_error: Mutex::new(None),
         }
+    }
+}
 
+fn spawn_sidecar(handle: &tauri::AppHandle) {
+    let command = match handle.shell().sidecar("ai-interpretation-runtime") {
+        Ok(command) => command.env("ONLINE_RUNTIME_RELOAD", "0"),
+        Err(error) => {
+            let msg = format!("sidecar binary not found: {error}");
+            eprintln!("Runtime {msg}");
+            let state = handle.state::<RuntimeProcess>();
+            *state.last_error.lock().unwrap() = Some(msg);
+            return;
+        }
+    };
+
+    let (mut rx, child) = match command.spawn() {
+        Ok(process) => process,
+        Err(error) => {
+            let msg = format!("failed to spawn sidecar: {error}");
+            eprintln!("Runtime {msg}");
+            let state = handle.state::<RuntimeProcess>();
+            *state.last_error.lock().unwrap() = Some(msg);
+            return;
+        }
+    };
+
+    {
+        let state = handle.state::<RuntimeProcess>();
+        *state.child.lock().unwrap() = Some(child);
+        *state.last_error.lock().unwrap() = None;
+    }
+
+    let handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
@@ -51,8 +65,7 @@ fn start_runtime_sidecar(app: &tauri::App) {
                 CommandEvent::Terminated(payload) => {
                     eprintln!("runtime process terminated: {:?}", payload.code);
                     let state = handle.state::<RuntimeProcess>();
-                    let mut guard = state.0.lock().expect("runtime process mutex poisoned");
-                    *guard = None;
+                    *state.child.lock().unwrap() = None;
                     break;
                 }
                 _ => {}
@@ -61,15 +74,37 @@ fn start_runtime_sidecar(app: &tauri::App) {
     });
 }
 
+fn start_runtime_sidecar(app: &tauri::App) {
+    spawn_sidecar(app.handle());
+}
+
 fn stop_runtime_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let state = app.state::<RuntimeProcess>();
-    let child = {
-        let mut guard = state.0.lock().expect("runtime process mutex poisoned");
-        guard.take()
-    };
+    let child = state.child.lock().unwrap().take();
     if let Some(child) = child {
         let _ = child.kill();
     }
+}
+
+#[tauri::command]
+fn runtime_status(state: tauri::State<'_, RuntimeProcess>) -> serde_json::Value {
+    let alive = state.child.lock().unwrap().is_some();
+    let error = state.last_error.lock().unwrap().clone();
+    serde_json::json!({ "alive": alive, "error": error })
+}
+
+#[tauri::command]
+fn restart_runtime(handle: tauri::AppHandle) -> Result<(), String> {
+    {
+        let state = handle.state::<RuntimeProcess>();
+        let child = state.child.lock().unwrap().take();
+        if let Some(child) = child {
+            let _ = child.kill();
+        }
+        *state.last_error.lock().unwrap() = None;
+    }
+    spawn_sidecar(&handle);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -82,6 +117,7 @@ pub fn run() {
             start_runtime_sidecar(app);
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![runtime_status, restart_runtime])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

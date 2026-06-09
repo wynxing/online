@@ -235,6 +235,29 @@ select:focus-visible {
   margin-top: 4px;
 }
 
+.restart-btn {
+  margin-top: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid rgba(118, 240, 208, 0.28);
+  background: rgba(118, 240, 208, 0.08);
+  color: var(--mint);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.restart-btn:hover:not(:disabled) {
+  background: rgba(118, 240, 208, 0.16);
+  border-color: var(--mint);
+}
+
+.restart-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .status-dot {
   width: 9px;
   height: 9px;

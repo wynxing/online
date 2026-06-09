@@ -1,10 +1,5 @@
-import type {
-  Device,
-  GlossaryTerm,
-  RuntimeConfig,
-  SessionRecord,
-  SubtitleSegment,
-} from "./types";
+import { invoke } from "@tauri-apps/api/core";
+import type { Device, GlossaryTerm, RuntimeConfig, SessionRecord, SubtitleSegment } from "./types";
 
 const isDev = import.meta.env.DEV;
 export const RUNTIME_HTTP = isDev ? "" : "http://127.0.0.1:8765";
@@ -77,7 +72,9 @@ export async function getSessions(): Promise<SessionRecord[]> {
 }
 
 export async function getSessionSegments(sessionId: string): Promise<SubtitleSegment[]> {
-  const data = await request<{ segments: SubtitleSegment[] }>(`/api/sessions/${sessionId}/segments`);
+  const data = await request<{ segments: SubtitleSegment[] }>(
+    `/api/sessions/${sessionId}/segments`
+  );
   return data.segments;
 }
 
@@ -110,7 +107,7 @@ export function deleteGlossaryTerm(id: string): Promise<{ deleted: boolean }> {
 }
 
 export function testTranslation(
-  config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "translationModel">,
+  config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "translationModel">
 ): Promise<{ ok: boolean; sample?: string; model: string; base_url: string; error?: string }> {
   return request("/api/test-translation", {
     method: "POST",
@@ -123,7 +120,7 @@ export function testTranslation(
 }
 
 export function testAsr(
-  config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "asrBaseUrl" | "asrApiKey" | "asrModel">,
+  config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "asrBaseUrl" | "asrApiKey" | "asrModel">
 ): Promise<{ ok: boolean; model: string; base_url: string; error?: string }> {
   return request("/api/test-asr", {
     method: "POST",
@@ -135,4 +132,14 @@ export function testAsr(
       asrModel: config.asrModel,
     }),
   });
+}
+
+export function getRuntimeStatus(): Promise<{ alive: boolean; error: string | null }> {
+  if (isDev) return Promise.resolve({ alive: true, error: null });
+  return invoke("runtime_status");
+}
+
+export function restartRuntime(): Promise<void> {
+  if (isDev) return Promise.resolve();
+  return invoke("restart_runtime");
 }
