@@ -17,12 +17,14 @@ import {
   updateGlossaryTerm,
 } from "./api";
 import { useSubtitleSocket } from "./hooks/useSubtitleSocket";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { ControlPanel } from "./components/ControlPanel";
 import { SubtitlePanel } from "./components/SubtitlePanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { GlossaryPanel } from "./components/GlossaryPanel";
 import { FloatingSubtitles } from "./components/FloatingSubtitles";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { NavButton } from "./components/common/NavButton";
 import type {
   Device,
@@ -114,6 +116,15 @@ function MainConsole() {
     diagnostics,
     setDiagnostics,
   } = useSubtitleSocket();
+
+  const {
+    status: updateStatus,
+    updateInfo,
+    progress: updateProgress,
+    error: updateError,
+    downloadAndInstall,
+    dismiss: dismissUpdate,
+  } = useUpdateChecker();
 
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
   const sourceDevice = devices.find((device) => device.id === config.defaultInputDeviceId);
@@ -386,6 +397,14 @@ function MainConsole() {
       </aside>
 
       <main className="workspace">
+        <UpdateBanner
+          status={updateStatus}
+          updateInfo={updateInfo}
+          progress={updateProgress}
+          error={updateError}
+          onUpdate={() => void downloadAndInstall()}
+          onDismiss={dismissUpdate}
+        />
         <header className="topbar">
           <div>
             <span className="eyebrow">EN TO ZH-CN</span>
