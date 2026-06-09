@@ -4,20 +4,21 @@ import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .models import GlossaryTerm, RuntimeConfig, SessionRecord, SubtitleSegment
 
 # Async SQLite support
 try:
     import aiosqlite
+
     HAS_AIOSQLITE = True
 except ImportError:
     HAS_AIOSQLITE = False
 
 # Async database connection (lazy singleton)
-_async_db: "aiosqlite.Connection | None" = None
+_async_db: aiosqlite.Connection | None = None
 
 
 LEGACY_DATA_DIR = Path(__file__).resolve().parents[1] / "data"

@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -103,12 +103,12 @@ class RealTranslationProvider:
         context_items = context[-4:] if context else []
 
         # Token budget: estimate ~3 chars per token, cap at ~800 tokens total
-        _TOKEN_BUDGET = 800 * 3  # chars
+        token_budget = 800 * 3  # chars
         total_chars = len(source_text)
         budget_items: list[TranslationContext] = []
         for item in reversed(context_items):
             item_chars = len(item.source_text) + len(item.translated_text)
-            if total_chars + item_chars > _TOKEN_BUDGET:
+            if total_chars + item_chars > token_budget:
                 break
             budget_items.append(item)
             total_chars += item_chars
@@ -123,8 +123,7 @@ class RealTranslationProvider:
         user_parts: list[str] = []
         if context:
             context_payload = [
-                {"source": item.source_text, "translation": item.translated_text}
-                for item in context_items
+                {"source": item.source_text, "translation": item.translated_text} for item in context_items
             ]
             user_parts.append(
                 "Recent confirmed context. Do not retranslate these lines:\n"
@@ -179,7 +178,9 @@ class RealTranslationProvider:
             message = result["choices"][0]["message"]
             content = message.get("content")
             if not content:
-                logger.warning("Translation API returned empty content: %s", json.dumps(result, ensure_ascii=False)[:500])
+                logger.warning(
+                    "Translation API returned empty content: %s", json.dumps(result, ensure_ascii=False)[:500]
+                )
                 raise RuntimeError("Translation API returned empty response")
             translated = _clean_translation_text(content)
             matched = _matched_glossary_terms(source_text, context or [], glossary_terms)
@@ -300,7 +301,8 @@ def _clean_translation_text(text: str) -> str:
             break
         cleaned = stripped
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned.strip(" \t\r\n\"'""''")
+    quote_chars = str.maketrans("", "", "\"'''")
+    return cleaned.strip().translate(quote_chars)
 
 
 def _enforce_glossary(translated: str, glossary_terms: list[dict[str, str | None]]) -> str:

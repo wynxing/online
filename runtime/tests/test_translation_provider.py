@@ -11,11 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.models import GlossaryTerm
 from app.translation_provider import (
     TranslationContext,
-    _TranslationCache,
     _clean_translation_text,
     _enforce_glossary,
     _matched_glossary_terms,
     _normalize_cache_key,
+    _TranslationCache,
 )
 
 

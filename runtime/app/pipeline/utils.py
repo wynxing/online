@@ -6,7 +6,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from ..models import RuntimeErrorPayload
+from ..models import RuntimeConfig, RuntimeErrorPayload
 from .constants import _SEGMENT_SEQUENCE_RE
 
 logger = logging.getLogger("pipeline.utils")
@@ -21,11 +21,11 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def get_asr_base_url(config: "RuntimeConfig") -> str:
+def get_asr_base_url(config: RuntimeConfig) -> str:
     return config.asrBaseUrl or config.baseUrl
 
 
-def get_asr_api_key(config: "RuntimeConfig") -> str:
+def get_asr_api_key(config: RuntimeConfig) -> str:
     return config.asrApiKey or config.apiKey
 
 
@@ -63,7 +63,7 @@ def put_latest(queue: asyncio.Queue, item: object, label: str) -> object | None:
     return dropped
 
 
-def segment_metadata(item: object) -> "tuple[str, float, float] | None":
+def segment_metadata(item: object) -> tuple[str, float, float] | None:
     """Extract (id, start, end) from various pipeline item types."""
     from .asr_worker import QueuedAudioSegment  # avoid circular import
     from .segment_processor import AudioSegment  # avoid circular import
@@ -99,7 +99,7 @@ async def finish_task(task: asyncio.Task, timeout: float) -> None:
 
 
 async def broadcast_error(
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     code: str,
     message: str,
     recoverable: bool,
@@ -111,7 +111,7 @@ async def broadcast_error(
     )
 
 
-async def broadcast_stopped(session_id: str, broadcast: "Broadcast") -> None:
+async def broadcast_stopped(session_id: str, broadcast: Broadcast) -> None:
     """Emit a session.status stopped event."""
     await broadcast(
         "session.status",
@@ -131,7 +131,7 @@ def parse_device_index(device_id: str) -> int | None:
         return None
 
 
-def get_device_params(device_index: int) -> "tuple[int, int]":
+def get_device_params(device_index: int) -> tuple[int, int]:
     import pyaudiowpatch as pyaudio
 
     pa = pyaudio.PyAudio()

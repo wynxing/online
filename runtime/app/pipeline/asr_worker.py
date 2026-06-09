@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from ..asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider, pcm_to_wav, prepare_for_asr
+from ..asr_provider import pcm_to_wav, prepare_for_asr
 from ..models import SubtitleSegment, SubtitleStatus
 from .constants import ASR_STALE_SECONDS
 from .metrics import emit_drop_metrics, emit_metrics, segment_metrics_payload
@@ -16,7 +17,6 @@ from .text_sanitize import sanitize_asr_text
 from .utils import now_iso, put_latest
 
 if TYPE_CHECKING:
-    from ..asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider
     from ..segmenter import AudioSegment
     from .metrics import Broadcast
 
@@ -37,7 +37,7 @@ class SegmentTiming:
 @dataclass
 class QueuedAudioSegment:
     segment_id: str
-    segment: "AudioSegment"
+    segment: AudioSegment
     queued_at: float
     timing: SegmentTiming
 
@@ -55,7 +55,7 @@ async def run_asr_processors(
     segment_queue: asyncio.Queue[QueuedAudioSegment],
     translation_queue: asyncio.Queue[RecognizedSegment],
     asr: ASRProvider,
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     should_stop: Callable[[], bool],
     concurrency: int,
     source_lang: str,

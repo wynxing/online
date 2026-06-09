@@ -6,9 +6,9 @@ import asyncio
 import logging
 import re
 from collections import deque
-from typing import TYPE_CHECKING, Awaitable, Callable
-
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..models import GlossaryTerm, SubtitleSegment, SubtitleStatus
 from ..translation_provider import RealTranslationProvider, TranslationContext
@@ -39,6 +39,7 @@ class TranslationResult:
     translation_queue_size: int
     translation_lag: float
 
+
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?…][\"')\]]*(?:\s+|$)")
 _SENTENCE_END_RE = re.compile(r"[.!?…][\"')\]]*\s*$")
 _LONG_SEGMENT_BOUNDARY_RE = re.compile(r"[,;][\"')\]]*\s+(?=[A-Z])")
@@ -48,12 +49,10 @@ def _is_sentence_complete(source_text: str) -> bool:
     text = source_text.strip()
     if _SENTENCE_END_RE.search(text):
         return True
-    if len(text) > 80 and _LONG_SEGMENT_BOUNDARY_RE.search(text):
-        return True
-    return False
+    return bool(len(text) > 80 and _LONG_SEGMENT_BOUNDARY_RE.search(text))
 
 
-def _split_first_sentence(source_text: str) -> "tuple[str | None, str]":
+def _split_first_sentence(source_text: str) -> tuple[str | None, str]:
     text = source_text.strip()
     match = _SENTENCE_BOUNDARY_RE.search(text)
     if match:
@@ -104,13 +103,13 @@ async def _translate_segment(
     glossary_terms: list[GlossaryTerm],
     context: deque[TranslationContext],
     context_lock: asyncio.Lock,
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     diagnostics_enabled: bool,
     translation_queue_size: int,
     worker_id: int,
     event_type: str,
     status: SubtitleStatus,
-) -> "TranslationResult":
+) -> TranslationResult:
     loop = asyncio.get_running_loop()
     translation_lag = loop.time() - item.recognized_at
     item.timing.translation_started_at = loop.time()
@@ -137,7 +136,7 @@ async def _translate_segment(
     accumulated_text = ""
     last_stream_time = loop.time()
     pending_token_count = 0
-    from .constants import STREAM_MIN_TOKENS, STREAM_MAX_INTERVAL, STREAM_MIN_INTERVAL
+    from .constants import STREAM_MAX_INTERVAL, STREAM_MIN_INTERVAL, STREAM_MIN_TOKENS
 
     async def on_stream_token(token: str) -> None:
         nonlocal accumulated_text, last_stream_time, pending_token_count
@@ -146,8 +145,7 @@ async def _translate_segment(
         now = loop.time()
         elapsed = now - last_stream_time
         if (
-            pending_token_count >= STREAM_MIN_TOKENS
-            or elapsed >= STREAM_MAX_INTERVAL
+            pending_token_count >= STREAM_MIN_TOKENS or elapsed >= STREAM_MAX_INTERVAL
         ) and elapsed >= STREAM_MIN_INTERVAL:
             last_stream_time = now
             pending_token_count = 0
@@ -204,14 +202,15 @@ async def _translate_segment(
 
 
 async def _emit_translation_result(
-    result: "TranslationResult",
-    broadcast: "Broadcast",
+    result: TranslationResult,
+    broadcast: Broadcast,
     diagnostics_enabled: bool,
 ) -> SubtitleSegment:
-    from .utils import elapsed_ms
-
     # Late import to allow test mocking via app.real_pipeline.upsert_segment_async
     import sys
+
+    from .utils import elapsed_ms
+
     _rp = sys.modules.get("app.real_pipeline")
     if _rp is not None:
         upsert_fn = _rp.upsert_segment_async
@@ -251,7 +250,7 @@ async def _emit_translation_result(
 async def _mark_superseded(
     item: RecognizedSegment,
     superseded_by: str,
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
 ) -> None:
     superseded = item.segment.model_copy(
         update={
@@ -270,7 +269,7 @@ async def run_translation_processors(
     translation_queue: asyncio.Queue[RecognizedSegment],
     translation: RealTranslationProvider,
     glossary_terms: list[GlossaryTerm],
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     should_stop: Callable[[], bool],
     concurrency: int,
     diagnostics_enabled: bool,
@@ -318,7 +317,9 @@ async def run_translation_processors(
             )
             async with context_lock:
                 if completed_source:
-                    context.append(TranslationContext(source_text=correction_source, translated_text=corrected.translatedText))
+                    context.append(
+                        TranslationContext(source_text=correction_source, translated_text=corrected.translatedText)
+                    )
 
             if remainder:
                 remainder_item = _recognized_with_source(item, remainder)
@@ -331,14 +332,18 @@ async def run_translation_processors(
                 superseded_by=open_tail.segment.id,
                 broadcast=broadcast,
             )
-            open_tail = None if completed_source else _recognized_from_segment(corrected, item.recognized_at, open_tail.timing)
+            open_tail = (
+                None if completed_source else _recognized_from_segment(corrected, item.recognized_at, open_tail.timing)
+            )
             return
 
         if _is_sentence_complete(item.source_text):
             if max_concurrency <= 1 or not context:
                 final = await translate_and_emit_serial(item, item.source_text, "segment.updated", SubtitleStatus.final)
                 async with context_lock:
-                    context.append(TranslationContext(source_text=item.source_text, translated_text=final.translatedText))
+                    context.append(
+                        TranslationContext(source_text=item.source_text, translated_text=final.translatedText)
+                    )
                 open_tail = None
                 return
 
@@ -490,6 +495,7 @@ async def run_translation_processors(
 
     # Dynamic concurrency monitoring
     from .constants import TRANSLATION_BACKLOG_THRESHOLD
+
     _extra_slots_added = 0
 
     async def _monitor_backlog() -> None:
@@ -502,12 +508,14 @@ async def run_translation_processors(
                 _extra_slots_added += 1
                 logger.info(
                     "Translation scale up: backlog=%d, extraSlots=%d",
-                    backlog, _extra_slots_added,
+                    backlog,
+                    _extra_slots_added,
                 )
             elif backlog == 0 and _extra_slots_added > 0:
                 logger.info(
                     "Translation scale down: backlog=%d, extraSlots=%d",
-                    backlog, _extra_slots_added,
+                    backlog,
+                    _extra_slots_added,
                 )
                 _extra_slots_added = 0
 

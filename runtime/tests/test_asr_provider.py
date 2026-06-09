@@ -1,7 +1,6 @@
 """Tests for ASR provider audio preprocessing."""
 
 import numpy as np
-import pytest
 
 from app.asr_provider import prepare_for_asr
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Awaitable, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider
 from ..audio_capture import AudioCapture
@@ -12,7 +13,6 @@ from ..models import GlossaryTerm, RuntimeConfig
 from ..segmenter import AudioSegmenter
 from ..translation_provider import RealTranslationProvider
 from .asr_worker import QueuedAudioSegment, SegmentTiming, run_asr_processors
-from .metrics import emit_metrics
 from .segment_processor import run_segmenter
 from .signal_monitor import run_signal_monitor
 from .translation_worker import run_translation_processors
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("pipeline.real")
 
 
-def create_asr_provider(config: RuntimeConfig) -> "OpenAICompatibleASRProvider | ChatCompletionASRProvider":
+def create_asr_provider(config: RuntimeConfig) -> OpenAICompatibleASRProvider | ChatCompletionASRProvider:
     asr_url = get_asr_base_url(config)
     asr_key = get_asr_api_key(config)
 
@@ -81,7 +81,7 @@ def _create_segmenter(config: RuntimeConfig, sample_rate: int, channels: int, is
 async def run_real_subtitle_pipeline(
     session_id: str,
     config: RuntimeConfig,
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     should_stop: Callable[[], bool],
     device_id: str,
     glossary_terms: list[GlossaryTerm],
@@ -128,6 +128,7 @@ async def run_real_subtitle_pipeline(
     frame_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
     segment_queue: asyncio.Queue[QueuedAudioSegment] = asyncio.Queue(maxsize=SEGMENT_QUEUE_MAXSIZE)
     from .asr_worker import RecognizedSegment
+
     translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue(maxsize=TRANSLATION_QUEUE_MAXSIZE)
 
     try:
@@ -145,7 +146,9 @@ async def run_real_subtitle_pipeline(
         return
 
     segmenter_task = asyncio.create_task(
-        run_segmenter(session_id, frame_queue, segment_queue, segmenter, broadcast, should_stop, config.diagnosticsEnabled)
+        run_segmenter(
+            session_id, frame_queue, segment_queue, segmenter, broadcast, should_stop, config.diagnosticsEnabled
+        )
     )
     asr_task = asyncio.create_task(
         run_asr_processors(

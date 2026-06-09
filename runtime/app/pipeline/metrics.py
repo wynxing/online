@@ -9,8 +9,8 @@ from .utils import duration_ms, elapsed_ms, now_iso
 
 if TYPE_CHECKING:
     from ..models import SubtitleSegment
-    from .segment_processor import AudioSegment
     from .asr_worker import SegmentTiming
+    from .segment_processor import AudioSegment
 
 logger = logging.getLogger("pipeline.metrics")
 
@@ -24,8 +24,8 @@ def segment_metrics_payload(
     segment_id: str,
     stage: str,
     status: str,
-    segment: "AudioSegment | SubtitleSegment",
-    timing: "SegmentTiming",
+    segment: AudioSegment | SubtitleSegment,
+    timing: SegmentTiming,
     worker_id: int | None = None,
     segment_queue_size: int | None = None,
     translation_queue_size: int | None = None,
@@ -72,7 +72,7 @@ def segment_metrics_payload(
 _emit_counter = 0
 
 
-async def emit_metrics(broadcast: "Broadcast", enabled: bool, payload: dict) -> None:
+async def emit_metrics(broadcast: Broadcast, enabled: bool, payload: dict) -> None:
     """Emit a pipeline.metrics event if diagnostics are enabled.
 
     Samples metric events: only every _METRICS_SAMPLE_RATE-th non-critical call
@@ -91,7 +91,7 @@ async def emit_metrics(broadcast: "Broadcast", enabled: bool, payload: dict) -> 
 
 async def emit_drop_metrics(
     session_id: str,
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     diagnostics_enabled: bool,
     item: object,
     reason: str,
@@ -138,6 +138,6 @@ async def emit_drop_metrics(
 
 
 # Re-export type alias for convenience
-from typing import Awaitable, Callable  # noqa: E402
+from collections.abc import Awaitable, Callable  # noqa: E402
 
 Broadcast = Callable[[str, dict], Awaitable[None]]

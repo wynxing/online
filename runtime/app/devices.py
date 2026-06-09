@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from .models import Device
@@ -82,10 +83,8 @@ def _list_devices_pyaudiowpatch() -> list[Device]:
         microphones = []
     finally:
         if pa:
-            try:
+            with contextlib.suppress(Exception):
                 pa.terminate()
-            except Exception:
-                pass
 
     devices = loopbacks + microphones
     return _mark_first_default(devices)
@@ -131,10 +130,7 @@ def _list_devices_sounddevice() -> list[Device]:
 
 def _mark_first_default(devices: list[Device]) -> list[Device]:
     """Prefer the first system loopback as the default capture device."""
-    return [
-        device.model_copy(update={"isDefault": index == 0})
-        for index, device in enumerate(devices)
-    ]
+    return [device.model_copy(update={"isDefault": index == 0}) for index, device in enumerate(devices)]
 
 
 def _normalize_device_name(name: str) -> str:

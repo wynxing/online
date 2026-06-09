@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..segmenter import AudioSegment, AudioSegmenter
+from ..segmenter import AudioSegmenter
 from .metrics import emit_drop_metrics, emit_metrics
-from .utils import now_iso, put_latest
+from .utils import put_latest
 
 if TYPE_CHECKING:
-    from .asr_worker import QueuedAudioSegment, SegmentTiming
+    from collections.abc import Callable
+
+    from .asr_worker import QueuedAudioSegment
     from .metrics import Broadcast
 
 logger = logging.getLogger("pipeline.segment")
@@ -21,10 +22,10 @@ logger = logging.getLogger("pipeline.segment")
 async def run_segmenter(
     session_id: str,
     frame_queue: asyncio.Queue[bytes],
-    segment_queue: asyncio.Queue["QueuedAudioSegment"],
+    segment_queue: asyncio.Queue[QueuedAudioSegment],
     segmenter: AudioSegmenter,
-    broadcast: "Broadcast",
-    should_stop: "Callable[[], bool]",
+    broadcast: Broadcast,
+    should_stop: Callable[[], bool],
     diagnostics_enabled: bool,
 ) -> None:
     """Consume PCM frames from *frame_queue*, segment them, and enqueue completed segments."""

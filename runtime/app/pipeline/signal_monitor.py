@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..segmenter import AudioSegmenter
 from .constants import NO_SIGNAL_GRACE_SECONDS, SIGNAL_CHECK_INTERVAL_SECONDS
@@ -20,7 +21,7 @@ logger = logging.getLogger("pipeline.signal")
 async def run_signal_monitor(
     session_id: str,
     segmenter: AudioSegmenter,
-    broadcast: "Broadcast",
+    broadcast: Broadcast,
     should_stop: Callable[[], bool],
     diagnostics_enabled: bool,
 ) -> None:

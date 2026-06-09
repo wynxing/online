@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 
@@ -93,10 +94,8 @@ class AudioCapture:
                 except Exception:
                     pass
             if pa:
-                try:
+                with contextlib.suppress(Exception):
                     pa.terminate()
-                except Exception:
-                    pass
 
     def _enqueue_frame(self, data: bytes) -> None:
         if not self._queue or not self._running:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -31,16 +30,17 @@ class StorageInitTests(unittest.TestCase):
         try:
             db_path = os.path.join(tmpdir, "test.sqlite3")
             config_path = os.path.join(tmpdir, "config.json")
-            with patch("app.storage.DB_PATH", Path(db_path)), \
-                 patch("app.storage.DATA_DIR", Path(tmpdir)), \
-                 patch("app.storage.CONFIG_PATH", Path(config_path)):
+            with (
+                patch("app.storage.DB_PATH", Path(db_path)),
+                patch("app.storage.DATA_DIR", Path(tmpdir)),
+                patch("app.storage.CONFIG_PATH", Path(config_path)),
+            ):
                 init_storage()
                 # Verify we can connect and run a query
                 import sqlite3
+
                 conn = sqlite3.connect(db_path)
-                tables = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
+                tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 table_names = {t[0] for t in tables}
                 conn.close()
                 self.assertIn("sessions", table_names)
@@ -48,6 +48,7 @@ class StorageInitTests(unittest.TestCase):
                 self.assertIn("glossary_terms", table_names)
         finally:
             import shutil
+
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -69,6 +70,7 @@ class VersionGuardTests(unittest.TestCase):
         self._patcher_dir.stop()
         self._patcher_cfg.stop()
         import shutil
+
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def _make_segment(self, segment_id: str, version: int, text: str = "hello") -> SubtitleSegment:
@@ -135,6 +137,7 @@ class GlossaryTests(unittest.TestCase):
         self._patcher_dir.stop()
         self._patcher_cfg.stop()
         import shutil
+
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_save_and_list_glossary(self) -> None:
@@ -178,6 +181,7 @@ class SessionTests(unittest.TestCase):
         self._patcher_dir.stop()
         self._patcher_cfg.stop()
         import shutil
+
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_create_and_list_sessions(self) -> None:

@@ -6,27 +6,25 @@ implementation lives in ``app.pipeline``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 # Re-export everything from the pipeline sub-package so that existing
 # ``from app.real_pipeline import ...`` statements continue to work.
 from .pipeline import (  # noqa: F401
-    ASRProvider,
     ASR_STALE_SECONDS,
-    Broadcast,
     NO_SIGNAL_GRACE_SECONDS,
-    QueuedAudioSegment,
-    RecognizedSegment,
     SEGMENT_QUEUE_MAXSIZE,
-    SegmentTiming,
     SIGNAL_CHECK_INTERVAL_SECONDS,
-    ShouldStop,
     TRANSLATION_MAX_CONCURRENCY,
     TRANSLATION_OPEN_TAIL_WAIT_SECONDS,
     TRANSLATION_QUEUE_MAXSIZE,
     TRANSLATION_QUEUE_POLL_SECONDS,
     TRANSLATION_REORDER_WAIT_SECONDS,
     TRANSLATION_STALE_SECONDS,
+    ASRProvider,
+    Broadcast,
+    QueuedAudioSegment,
+    RecognizedSegment,
+    SegmentTiming,
+    ShouldStop,
     broadcast_error,
     broadcast_stopped,
     create_asr_provider,
@@ -48,8 +46,8 @@ from .pipeline import (  # noqa: F401
     run_signal_monitor,
     run_translation_processors,
     sanitize_asr_text,
-    segment_metrics_payload,
     segment_metadata,
+    segment_metrics_payload,
     segment_sequence,
 )
 

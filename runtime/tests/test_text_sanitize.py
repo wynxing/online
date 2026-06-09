@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.pipeline.text_sanitize import SanitizedASRText, sanitize_asr_text
+from app.pipeline.text_sanitize import sanitize_asr_text
 
 
 class EmptyInputTests(unittest.TestCase):

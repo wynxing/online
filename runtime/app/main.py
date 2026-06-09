@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
-import httpx
 
 from .devices import list_audio_devices
 from .models import (
@@ -18,7 +17,6 @@ from .models import (
     TestTranslationRequest,
 )
 from .state import RuntimeState
-from .translation_provider import RealTranslationProvider
 from .storage import (
     close_async_db,
     delete_glossary_term,
@@ -31,6 +29,7 @@ from .storage import (
     save_glossary_term,
     seed_glossary,
 )
+from .translation_provider import RealTranslationProvider
 
 app = FastAPI(title="AI Simultaneous Interpretation Runtime")
 app.add_middleware(
@@ -97,9 +96,13 @@ async def test_translation(request: TestTranslationRequest):
     if not base_url:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Translation Base URL is required."})
     if not api_key:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Translation API Key is required.", "base_url": base_url})
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": "Translation API Key is required.", "base_url": base_url}
+        )
     if not model:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Translation model is required.", "base_url": base_url})
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": "Translation model is required.", "base_url": base_url}
+        )
 
     provider = RealTranslationProvider(
         base_url=base_url,
@@ -137,9 +140,13 @@ async def test_asr(request: TestAsrRequest):
     if not base_url:
         return JSONResponse(status_code=400, content={"ok": False, "error": "ASR Base URL is required."})
     if not api_key:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "ASR API Key is required.", "base_url": base_url})
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": "ASR API Key is required.", "base_url": base_url}
+        )
     if not model:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "ASR model is required.", "base_url": base_url})
+        return JSONResponse(
+            status_code=400, content={"ok": False, "error": "ASR model is required.", "base_url": base_url}
+        )
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:

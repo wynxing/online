@@ -26,7 +26,7 @@ class SanitizedASRText:
     reject_reason: str | None = None
 
 
-def sanitize_asr_text(raw_text: str, source_lang: str = "en") -> "SanitizedASRText":
+def sanitize_asr_text(raw_text: str, source_lang: str = "en") -> SanitizedASRText:
     """Clean ASR output: strip protocol noise, reject hallucinations and garbage."""
     text = raw_text.strip()
     if not text:

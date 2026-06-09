@@ -9,8 +9,8 @@
 
 from __future__ import annotations
 
-import sys
 import io
+import sys
 import wave
 from pathlib import Path
 

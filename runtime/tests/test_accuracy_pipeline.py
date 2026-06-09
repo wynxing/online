@@ -22,7 +22,12 @@ from app.real_pipeline import (
     sanitize_asr_text,
 )
 from app.segmenter import AudioSegment, AudioSegmenter
-from app.translation_provider import RealTranslationProvider, TranslationContext, _clean_translation_text, _matched_glossary_terms
+from app.translation_provider import (
+    RealTranslationProvider,
+    TranslationContext,
+    _clean_translation_text,
+    _matched_glossary_terms,
+)
 
 
 def pcm_frame(sample_rate: int, channels: int, duration: float, amplitude: int) -> bytes:
@@ -78,8 +83,7 @@ class SegmenterTests(unittest.TestCase):
         )
 
         emitted = [
-            segmenter.feed(pcm_frame(sample_rate=1000, channels=1, duration=0.1, amplitude=0))
-            for _ in range(10)
+            segmenter.feed(pcm_frame(sample_rate=1000, channels=1, duration=0.1, amplitude=0)) for _ in range(10)
         ]
 
         self.assertTrue(all(segment is None for segment in emitted))
@@ -287,7 +291,9 @@ class FakeTranslation:
         self.glossary_lengths: list[int] = []
         self.sources: list[str] = []
 
-    async def translate(self, source_text: str, source_lang: str, target_lang: str, glossary_terms: list, context=None) -> str:
+    async def translate(
+        self, source_text: str, source_lang: str, target_lang: str, glossary_terms: list, context=None
+    ) -> str:
         self.sources.append(source_text)
         self.context_lengths.append(len(context or []))
         self.glossary_lengths.append(len(glossary_terms))
@@ -296,7 +302,9 @@ class FakeTranslation:
             raise RuntimeError("fake translation failure")
         return f"translation:{source_text}"
 
-    async def translate_streaming(self, source_text: str, source_lang: str, target_lang: str, glossary_terms: list, context=None, on_token=None) -> str:
+    async def translate_streaming(
+        self, source_text: str, source_lang: str, target_lang: str, glossary_terms: list, context=None, on_token=None
+    ) -> str:
         """Fake streaming translation for tests."""
         self.sources.append(source_text)
         self.context_lengths.append(len(context or []))
@@ -374,8 +382,20 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual({item.segment.id for item in recognized}, {"seg_001", "seg_003"})
         self.assertTrue(any(event == "segment.created" for event, _ in events))
-        self.assertTrue(any(payload.get("dropReason") == "numeric_or_symbol_noise" for event, payload in events if event == "pipeline.metrics"))
-        self.assertTrue(any(payload.get("stage") == "asr" and payload.get("status") == "finished" for event, payload in events if event == "pipeline.metrics"))
+        self.assertTrue(
+            any(
+                payload.get("dropReason") == "numeric_or_symbol_noise"
+                for event, payload in events
+                if event == "pipeline.metrics"
+            )
+        )
+        self.assertTrue(
+            any(
+                payload.get("stage") == "asr" and payload.get("status") == "finished"
+                for event, payload in events
+                if event == "pipeline.metrics"
+            )
+        )
 
     async def test_translation_workers_broadcast_final_segments_and_context(self) -> None:
         translation_queue: asyncio.Queue[RecognizedSegment] = asyncio.Queue()
@@ -390,8 +410,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         translation = FakeTranslation(delays={"First line.": 0.02, "Second line.": 0.0, "Third line.": 0.01})
+
         async def _store_async(segment):
-                stored.append(segment)
+            stored.append(segment)
+
         with patch("app.real_pipeline.upsert_segment_async", _store_async):
             await _run_translation_processors(
                 session_id="session_test",
@@ -430,7 +452,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         translation = FakeTranslation(delays={"First line.": 0.01, "Second line.": 0.08, "Third line.": 0.08})
         started_at = asyncio.get_running_loop().time()
-        async def _noop_async(segment): return None
+
+        async def _noop_async(segment):
+            return None
+
         with patch("app.real_pipeline.upsert_segment_async", _noop_async):
             await _run_translation_processors(
                 session_id="session_test",
@@ -460,8 +485,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         translation = FakeTranslation()
+
         async def _store_async(segment):
-                stored.append(segment)
+            stored.append(segment)
+
         with patch("app.real_pipeline.upsert_segment_async", _store_async):
             await _run_translation_processors(
                 session_id="session_test",
@@ -495,7 +522,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         translation = FakeTranslation()
-        async def _noop_async(segment): return None
+
+        async def _noop_async(segment):
+            return None
+
         with patch("app.real_pipeline.upsert_segment_async", _noop_async):
             await _run_translation_processors(
                 session_id="session_test",
@@ -522,7 +552,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         translation = FakeTranslation(failures={"Broken line."})
-        async def _noop_async(segment): return None
+
+        async def _noop_async(segment):
+            return None
+
         with patch("app.real_pipeline.upsert_segment_async", _noop_async):
             await _run_translation_processors(
                 session_id="session_test",
@@ -552,7 +585,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         translation = FakeTranslation()
-        async def _noop_async(segment): return None
+
+        async def _noop_async(segment):
+            return None
+
         with patch("app.real_pipeline.upsert_segment_async", _noop_async):
             await _run_translation_processors(
                 session_id="session_test",
@@ -565,7 +601,9 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 diagnostics_enabled=True,
             )
 
-        seg2_updates = [payload for event, payload in events if event == "segment.updated" and payload["id"] == "seg_002"]
+        seg2_updates = [
+            payload for event, payload in events if event == "segment.updated" and payload["id"] == "seg_002"
+        ]
         self.assertEqual(seg2_updates[-1]["sourceText"], "Then exports fell")
         self.assertIsNone(seg2_updates[-1].get("supersededBy"))
         self.assertIn("became so easy, the countries usually overrelied on one sector.", translation.sources)
@@ -582,7 +620,10 @@ class PipelineConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         translation = FakeTranslation()
-        async def _noop_async(segment): return None
+
+        async def _noop_async(segment):
+            return None
+
         with patch("app.real_pipeline.upsert_segment_async", _noop_async):
             await _run_translation_processors(
                 session_id="session_test",
