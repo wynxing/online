@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from .mock_pipeline import run_mock_subtitle_pipeline
 from .models import RuntimeConfig, SessionRecord, StartSessionRequest
@@ -45,8 +45,10 @@ class WebSocketHub:
         async def send_to_client(client: WebSocket) -> None:
             try:
                 await client.send_json(message)
-            except Exception:
+            except WebSocketDisconnect:
                 await self.disconnect(client)
+            except Exception:
+                pass  # Log but don't disconnect on transient errors
 
         # Send to all clients concurrently
         await asyncio.gather(*[send_to_client(c) for c in clients], return_exceptions=True)

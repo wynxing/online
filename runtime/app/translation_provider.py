@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Awaitable
 from dataclasses import dataclass
 
@@ -41,11 +42,33 @@ class TranslationContext:
 _CACHE_MAX_SIZE = 128
 
 
+class _TranslationCache:
+    """LRU cache for translation results with O(1) get/put."""
+
+    def __init__(self, max_size: int = _CACHE_MAX_SIZE) -> None:
+        self._cache: OrderedDict[str, str] = OrderedDict()
+        self._max_size = max_size
+        self.hits = 0
+
+    def get(self, key: str) -> str | None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            self.hits += 1
+            return self._cache[key]
+        return None
+
+    def put(self, key: str, value: str) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = value
+        if len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+
+
 def _normalize_cache_key(text: str) -> str:
     """Normalize source text for cache key: lowercase, strip, collapse spaces."""
-    import re as _re
     normalized = text.strip().lower()
-    normalized = _re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
     return normalized
 
 
@@ -62,18 +85,10 @@ class RealTranslationProvider:
                 keepalive_expiry=30.0,
             ),
         )
-        self._cache: dict[str, str] = {}
-        self._cache_hits = 0
+        self._cache = _TranslationCache()
 
     async def aclose(self) -> None:
         await self._client.aclose()
-
-    def _put_cache(self, key: str, value: str) -> None:
-        """Store translation in cache, evicting oldest entry if at capacity."""
-        if len(self._cache) >= _CACHE_MAX_SIZE:
-            oldest_key = next(iter(self._cache))
-            del self._cache[oldest_key]
-        self._cache[key] = value
 
     def _build_payload(
         self,
@@ -142,10 +157,10 @@ class RealTranslationProvider:
     ) -> str:
         """Translate one subtitle segment or continued sentence and return only that translation."""
         cache_key = _normalize_cache_key(source_text)
-        if cache_key in self._cache:
-            self._cache_hits += 1
-            logger.info("Translation cache hit (%d total): %s", self._cache_hits, source_text[:60])
-            return self._cache[cache_key]
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.info("Translation cache hit (%d total): %s", self._cache.hits, source_text[:60])
+            return cached
 
         payload = self._build_payload(source_text, source_lang, target_lang, glossary_terms, context)
         url = f"{self._base_url}/chat/completions"
@@ -170,7 +185,7 @@ class RealTranslationProvider:
             matched = _matched_glossary_terms(source_text, context or [], glossary_terms)
             translated = _enforce_glossary(translated, matched)
             logger.info("Translation raw response: text=%s", translated[:160])
-            self._put_cache(cache_key, translated)
+            self._cache.put(cache_key, translated)
             return translated
 
         except httpx.HTTPStatusError as e:
@@ -206,10 +221,9 @@ class RealTranslationProvider:
             The complete translated text.
         """
         cache_key = _normalize_cache_key(source_text)
-        if cache_key in self._cache:
-            self._cache_hits += 1
-            logger.info("Translation cache hit (%d total): %s", self._cache_hits, source_text[:60])
-            cached = self._cache[cache_key]
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.info("Translation cache hit (%d total): %s", self._cache.hits, source_text[:60])
             if on_token:
                 await on_token(cached)
             return cached
@@ -250,7 +264,7 @@ class RealTranslationProvider:
             matched = _matched_glossary_terms(source_text, context or [], glossary_terms)
             translated = _enforce_glossary(translated, matched)
             logger.info("Translation streaming completed: text=%s", translated[:160])
-            self._put_cache(cache_key, translated)
+            self._cache.put(cache_key, translated)
             return translated
 
         except httpx.HTTPStatusError as e:

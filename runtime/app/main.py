@@ -20,6 +20,7 @@ from .models import (
 from .state import RuntimeState
 from .translation_provider import RealTranslationProvider
 from .storage import (
+    close_async_db,
     delete_glossary_term,
     init_storage,
     list_glossary,
@@ -34,7 +35,12 @@ from .storage import (
 app = FastAPI(title="AI Simultaneous Interpretation Runtime")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:1420", "http://127.0.0.1:1420", "tauri://localhost"],
+    allow_origins=[
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+        "tauri://localhost",
+        "https://tauri.localhost",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -54,6 +60,11 @@ async def startup() -> None:
             GlossaryTerm(id="term_latency", source="latency", target="延迟", domain="Systems"),
         ]
     )
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await close_async_db()
 
 
 @app.get("/api/health")
@@ -156,6 +167,8 @@ async def start_session(request: StartSessionRequest):
         return await state.start_session(request)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/api/session/stop")

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Awaitable, Callable
 
 from .models import SubtitleSegment, SubtitleStatus
-from .storage import upsert_segment
+from .storage import upsert_segment_async
 
 
 Broadcast = Callable[[str, dict], Awaitable[None]]
@@ -91,7 +91,7 @@ async def run_mock_subtitle_pipeline(
             endTime=start_time + 3.2,
             updatedAt=now_iso(),
         )
-        upsert_segment(final)
+        await upsert_segment_async(final)
         await broadcast("segment.updated", final.model_dump(mode="json"))
         await asyncio.sleep(1.2)
         if should_stop():

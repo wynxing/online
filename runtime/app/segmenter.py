@@ -143,13 +143,13 @@ class AudioSegmenter:
 def _rms(pcm_bytes: bytes) -> float:
     """Compute Root Mean Square of 16-bit PCM audio.
 
-    Uses integer arithmetic to avoid intermediate float32 allocations.
+    Uses int64 accumulation via np.dot to avoid overflow and reduce allocations.
     """
     if len(pcm_bytes) < 2:
         return 0.0
     samples = np.frombuffer(pcm_bytes, dtype=np.int16)
     if len(samples) == 0:
         return 0.0
-    # Use int64 accumulation to avoid overflow and reduce allocations
-    sum_sq = np.sum(samples.astype(np.int64) ** 2)
-    return float(np.sqrt(sum_sq / len(samples)))
+    # Cast to int64 before dot to guarantee no intermediate overflow
+    samples_f = samples.astype(np.int64)
+    return float(np.sqrt(np.dot(samples_f, samples_f) / len(samples)))
