@@ -26,7 +26,13 @@
     "playwright": "^1.60.0"
   },
   "lint-staged": {
-    "apps/desktop/src/**/*.{ts,tsx}": ["eslint --fix", "prettier --write"],
-    "runtime/**/*.py": ["ruff check --fix", "ruff format"]
+    "apps/desktop/src/**/*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "runtime/**/*.py": [
+      "ruff check --fix",
+      "ruff format"
+    ]
   }
 }
