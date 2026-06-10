@@ -140,6 +140,11 @@ function MainConsole() {
     void bootstrap();
   }, []);
 
+  // 同步字号到 localStorage，供浮窗读取
+  useEffect(() => {
+    window.localStorage.setItem("fontSize", String(config.fontSize));
+  }, [config.fontSize]);
+
   // 设备列表轮询：Runtime 已连接后每 5 秒刷新一次
   useEffect(() => {
     if (notice !== "Runtime 已连接") return;
@@ -526,6 +531,7 @@ function MainConsole() {
               diagnostics={diagnostics}
               diagnosticsEnabled={config.diagnosticsEnabled}
               errorLog={errorLog}
+              fontSize={config.fontSize}
             />
             <div className="latest-panel">
               <span className="eyebrow">Latest Stable</span>
@@ -536,8 +542,18 @@ function MainConsole() {
                     visibleSegments[visibleSegments.length - 1];
                   return (
                     <>
-                      <p className="latest-source">{latest.sourceText}</p>
-                      <p className="latest-translation">{latest.translatedText}</p>
+                      <p
+                        className="latest-source"
+                        style={{ fontSize: `${config.fontSize * 0.75}px` }}
+                      >
+                        {latest.sourceText}
+                      </p>
+                      <p
+                        className="latest-translation"
+                        style={{ fontSize: `${config.fontSize}px` }}
+                      >
+                        {latest.translatedText}
+                      </p>
                     </>
                   );
                 })()

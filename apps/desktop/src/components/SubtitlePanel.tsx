@@ -17,6 +17,7 @@ interface SubtitlePanelProps {
   diagnostics: PipelineDiagnostics;
   diagnosticsEnabled: boolean;
   errorLog: Array<{ code: string; message: string; time: string }>;
+  fontSize?: number;
 }
 
 function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[] {
@@ -34,6 +35,7 @@ export function SubtitlePanel({
   diagnostics,
   diagnosticsEnabled,
   errorLog,
+  fontSize,
 }: SubtitlePanelProps) {
   const subtitlePaneRef = useRef<HTMLDivElement>(null);
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
@@ -82,6 +84,7 @@ export function SubtitlePanel({
               segment={segment}
               displayMode={displayMode}
               corrected={correctedIds.has(segment.id)}
+              fontSize={fontSize}
             />
           ))
         )}

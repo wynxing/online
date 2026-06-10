@@ -12,13 +12,27 @@ export function FloatingSubtitles() {
   const { segments, correctedIds, socketStatus } = useSubtitleSocket();
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
   const [displayMode, setDisplayMode] = useState<DisplayMode>(
-    (window.localStorage.getItem("floatingDisplayMode") as DisplayMode) || "bilingual",
+    (window.localStorage.getItem("floatingDisplayMode") as DisplayMode) || "bilingual"
   );
+  const [fontSize, setFontSize] = useState<number>(
+    Number(window.localStorage.getItem("fontSize")) || 24
+  );
+
+  // 监听 localStorage 变化（主窗口修改字号时同步）
+  useEffect(() => {
+    function handleStorage(e: StorageEvent) {
+      if (e.key === "fontSize" && e.newValue) {
+        setFontSize(Number(e.newValue));
+      }
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
   const latest = useMemo(
     () =>
       [...visibleSegments].reverse().find((segment) => segment.status !== "interim") ??
       visibleSegments[visibleSegments.length - 1],
-    [visibleSegments],
+    [visibleSegments]
   );
 
   useEffect(() => {
@@ -68,7 +82,7 @@ export function FloatingSubtitles() {
       </div>
       <div className={`floating-card ${latest && correctedIds.has(latest.id) ? "corrected" : ""}`}>
         {latest ? (
-          <SubtitleContent segment={latest} displayMode={displayMode} />
+          <SubtitleContent segment={latest} displayMode={displayMode} fontSize={fontSize} />
         ) : (
           <span className="floating-empty">等待同传会话开始...</span>
         )}
