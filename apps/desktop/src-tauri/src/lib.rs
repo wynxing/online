@@ -7,6 +7,9 @@ use tauri_plugin_shell::{
     ShellExt,
 };
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 struct RuntimeProcess {
     child: Mutex<Option<CommandChild>>,
     last_error: Mutex<Option<String>>,
@@ -28,7 +31,15 @@ impl Default for RuntimeProcess {
 
 fn spawn_sidecar(handle: &tauri::AppHandle) {
     let command = match handle.shell().sidecar("ai-interpretation-runtime") {
-        Ok(command) => command.env("ONLINE_RUNTIME_RELOAD", "0"),
+        Ok(command) => {
+            let cmd = command.env("ONLINE_RUNTIME_RELOAD", "0");
+
+            // Windows: 添加 CREATE_NO_WINDOW 标志以隐藏控制台窗口
+            #[cfg(target_os = "windows")]
+            let cmd = cmd.creation_flags(0x08000000);
+
+            cmd
+        }
         Err(error) => {
             let msg = format!("sidecar binary not found: {error}");
             eprintln!("Runtime {msg}");
