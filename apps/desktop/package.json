@@ -1,57 +1,57 @@
 {
-  "name": "@ai-interpretation/desktop",
-  "private": true,
-  "version": "0.4.2",
-  "type": "module",
-  "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "tsc && vite build",
-    "preview": "vite preview --host 127.0.0.1",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx}\"",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
-  },
-  "lint-staged": {
-    "src/**/*.{ts,tsx}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "*.py": [
-      "ruff check --fix",
-      "ruff format"
-    ]
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2.2.0",
-    "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.1",
-    "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@tauri-apps/cli": "^2.11.2",
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
-    "@types/react": "^18.3.17",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "eslint": "^10.4.1",
-    "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "jsdom": "^29.1.1",
-    "prettier": "^3.8.3",
-    "typescript": "^5.7.2",
-    "typescript-eslint": "^8.61.0",
-    "vite": "^6.0.5",
-    "vitest": "^4.1.8"
-  }
+    "name":  "@ai-interpretation/desktop",
+    "private":  true,
+    "version":  "0.4.3",
+    "type":  "module",
+    "scripts":  {
+                    "dev":  "vite --host 127.0.0.1",
+                    "build":  "tsc \u0026\u0026 vite build",
+                    "preview":  "vite preview --host 127.0.0.1",
+                    "tauri":  "tauri",
+                    "tauri:dev":  "tauri dev",
+                    "lint":  "eslint src/",
+                    "lint:fix":  "eslint src/ --fix",
+                    "format":  "prettier --write \"src/**/*.{ts,tsx}\"",
+                    "format:check":  "prettier --check \"src/**/*.{ts,tsx}\"",
+                    "test":  "vitest run",
+                    "test:watch":  "vitest",
+                    "test:coverage":  "vitest run --coverage"
+                },
+    "lint-staged":  {
+                        "src/**/*.{ts,tsx}":  [
+                                                  "eslint --fix",
+                                                  "prettier --write"
+                                              ],
+                        "*.py":  [
+                                     "ruff check --fix",
+                                     "ruff format"
+                                 ]
+                    },
+    "dependencies":  {
+                         "@tauri-apps/api":  "^2.2.0",
+                         "@tauri-apps/plugin-process":  "^2.3.1",
+                         "@tauri-apps/plugin-updater":  "^2.10.1",
+                         "lucide-react":  "^0.468.0",
+                         "react":  "^18.3.1",
+                         "react-dom":  "^18.3.1"
+                     },
+    "devDependencies":  {
+                            "@eslint/js":  "^10.0.1",
+                            "@tauri-apps/cli":  "^2.11.2",
+                            "@testing-library/jest-dom":  "^6.9.1",
+                            "@testing-library/react":  "^16.3.2",
+                            "@testing-library/user-event":  "^14.6.1",
+                            "@types/react":  "^18.3.17",
+                            "@types/react-dom":  "^18.3.5",
+                            "@vitejs/plugin-react":  "^4.3.4",
+                            "eslint":  "^10.4.1",
+                            "eslint-plugin-react-hooks":  "^7.1.1",
+                            "eslint-plugin-react-refresh":  "^0.5.2",
+                            "jsdom":  "^29.1.1",
+                            "prettier":  "^3.8.3",
+                            "typescript":  "^5.7.2",
+                            "typescript-eslint":  "^8.61.0",
+                            "vite":  "^6.0.5",
+                            "vitest":  "^4.1.8"
+                        }
 }
