@@ -91,6 +91,21 @@ jobs:
             -BundleDir "apps\desktop\src-tauri\target\release\bundle" `
             -OutputPath "apps\desktop\src-tauri\target\release\bundle\latest.json"
 
+      - name: Verify update manifest was generated
+        shell: pwsh
+        run: |
+          $manifest = "apps\desktop\src-tauri\target\release\bundle\latest.json"
+          if (-not (Test-Path $manifest)) {
+            Write-Error "latest.json was not generated at $manifest"
+            exit 1
+          }
+          $bytes = (Get-Item $manifest).Length
+          if ($bytes -lt 50) {
+            Write-Error "latest.json is suspiciously small ($bytes bytes); refusing to upload."
+            exit 1
+          }
+          Write-Host "✓ latest.json is $bytes bytes"
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -98,6 +113,7 @@ jobs:
           name: AI Interpretation Assistant ${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
             apps/desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
