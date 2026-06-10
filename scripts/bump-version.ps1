@@ -5,6 +5,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# UTF-8 encoding without BOM
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
 # Remove leading 'v' if present
 $Version = $Version -replace '^v', ''
 
@@ -14,14 +17,16 @@ Write-Host "Bumping version to $Version"
 $desktopPkg = Join-Path $PSScriptRoot "..\apps\desktop\package.json"
 $desktopContent = Get-Content $desktopPkg -Raw | ConvertFrom-Json
 $desktopContent.version = $Version
-$desktopContent | ConvertTo-Json -Depth 10 | Set-Content $desktopPkg -Encoding UTF8
+$json = $desktopContent | ConvertTo-Json -Depth 10
+[System.IO.File]::WriteAllText($desktopPkg, $json, $utf8NoBom)
 Write-Host "  Updated apps/desktop/package.json"
 
 # Update apps/desktop/src-tauri/tauri.conf.json
 $tauriConf = Join-Path $PSScriptRoot "..\apps\desktop\src-tauri\tauri.conf.json"
 $tauriContent = Get-Content $tauriConf -Raw | ConvertFrom-Json
 $tauriContent.version = $Version
-$tauriContent | ConvertTo-Json -Depth 10 | Set-Content $tauriConf -Encoding UTF8
+$json = $tauriContent | ConvertTo-Json -Depth 10
+[System.IO.File]::WriteAllText($tauriConf, $json, $utf8NoBom)
 Write-Host "  Updated apps/desktop/src-tauri/tauri.conf.json"
 
 # Update apps/desktop/src-tauri/Cargo.toml
@@ -29,7 +34,7 @@ Write-Host "  Updated apps/desktop/src-tauri/tauri.conf.json"
 $cargoToml = Join-Path $PSScriptRoot "..\apps\desktop\src-tauri\Cargo.toml"
 $cargoContent = Get-Content $cargoToml -Raw
 $cargoContent = $cargoContent -replace '(?m)^version = ".*"', "version = `"$Version`""
-$cargoContent | Set-Content $cargoToml -Encoding UTF8
+[System.IO.File]::WriteAllText($cargoToml, $cargoContent, $utf8NoBom)
 Write-Host "  Updated apps/desktop/src-tauri/Cargo.toml"
 
 # Verify all files have the same version
