@@ -118,6 +118,7 @@ function MainConsole() {
     setErrorLog,
     diagnostics,
     setDiagnostics,
+    reconnectAttempt,
   } = useSubtitleSocket();
 
   const {
@@ -153,37 +154,65 @@ function MainConsole() {
   async function bootstrap(retries = 15, delayMs = 1000) {
     const id = ++bootstrapId.current;
 
-    // 检查 sidecar 进程状态（仅在非 dev 模式下有意义）
+    // 步骤 1：先尝试健康检查（快速检测 Runtime 是否已存在）
+    try {
+      await health();
+      if (id !== bootstrapId.current) return;
+
+      // Runtime 已在运行，直接连接
+      const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all([
+        getConfig(),
+        getDevices(),
+        getGlossary(),
+        getSessions(),
+      ]);
+      if (id !== bootstrapId.current) return;
+
+      setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
+      setDevices(runtimeDevices);
+      setGlossary(runtimeGlossary);
+      setSessions(runtimeSessions);
+      setNotice("Runtime 已连接");
+      return;
+    } catch {
+      // 健康检查失败，继续步骤 2
+    }
+
+    // 步骤 2：检查 sidecar 进程状态
     try {
       const status = await getRuntimeStatus();
       if (id !== bootstrapId.current) return;
 
-      if (!status.alive && status.error) {
+      if (status.alive) {
+        // 进程在运行但健康检查失败，等待并重试
+        setNotice("Runtime 进程运行中，等待服务就绪...");
+      } else if (status.error) {
         // sidecar 启动失败，有明确错误信息（如二进制文件缺失）
         setNotice(`Runtime 启动失败：${status.error}`);
         return;
-      }
-
-      if (!status.alive && !status.error) {
-        // sidecar 进程不在运行，尝试重新启动
-        setNotice("Runtime 进程未运行，正在重新启动...");
+      } else {
+        // sidecar 进程不在运行，尝试启动
+        setNotice("Runtime 进程未运行，正在启动...");
         await restartRuntime();
         if (id !== bootstrapId.current) return;
       }
     } catch {
-      // invoke 失败（如在 dev 模式），跳过 sidecar 检查，直接尝试健康检查
+      // invoke 失败（如在 dev 模式），跳过 sidecar 检查
     }
 
-    // 轮询 HTTP 健康检查，等待 Runtime 就绪
+    // 步骤 3：轮询健康检查（等待 sidecar 就绪）
     for (let attempt = 1; attempt <= retries; attempt++) {
       if (id !== bootstrapId.current) return;
       try {
         await health();
         if (id !== bootstrapId.current) return;
+
+        // 健康检查成功，加载配置和数据
         const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all(
           [getConfig(), getDevices(), getGlossary(), getSessions()]
         );
         if (id !== bootstrapId.current) return;
+
         setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
         setDevices(runtimeDevices);
         setGlossary(runtimeGlossary);
@@ -428,7 +457,11 @@ function MainConsole() {
                       ? "WebSocket 在线"
                       : "WebSocket 离线"}
             </strong>
-            <span>{notice}</span>
+            <span>
+              {socketStatus === "disconnected" && reconnectAttempt > 0
+                ? `WebSocket 重连中 (${reconnectAttempt}/10)`
+                : notice}
+            </span>
             {(notice.includes("启动失败") || notice.includes("未就绪")) && (
               <button
                 className="restart-btn"

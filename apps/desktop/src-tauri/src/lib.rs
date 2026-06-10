@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::{
@@ -9,13 +10,18 @@ use tauri_plugin_shell::{
 struct RuntimeProcess {
     child: Mutex<Option<CommandChild>>,
     last_error: Mutex<Option<String>>,
+    restart_count: Mutex<u32>,
 }
+
+const MAX_RESTART_ATTEMPTS: u32 = 3;
+const RESTART_DELAY_MS: u64 = 2000;
 
 impl Default for RuntimeProcess {
     fn default() -> Self {
         Self {
             child: Mutex::new(None),
             last_error: Mutex::new(None),
+            restart_count: Mutex::new(0),
         }
     }
 }
@@ -47,6 +53,7 @@ fn spawn_sidecar(handle: &tauri::AppHandle) {
         let state = handle.state::<RuntimeProcess>();
         *state.child.lock().unwrap() = Some(child);
         *state.last_error.lock().unwrap() = None;
+        *state.restart_count.lock().unwrap() = 0;  // Reset restart count on successful spawn
     }
 
     let handle = handle.clone();
@@ -66,6 +73,31 @@ fn spawn_sidecar(handle: &tauri::AppHandle) {
                     eprintln!("runtime process terminated: {:?}", payload.code);
                     let state = handle.state::<RuntimeProcess>();
                     *state.child.lock().unwrap() = None;
+
+                    // Auto-restart logic
+                    let mut restart_count = state.restart_count.lock().unwrap();
+                    if *restart_count < MAX_RESTART_ATTEMPTS {
+                        *restart_count += 1;
+                        eprintln!(
+                            "Attempting to restart runtime (attempt {}/{})",
+                            *restart_count, MAX_RESTART_ATTEMPTS
+                        );
+                        drop(restart_count);
+
+                        // Wait before restarting to avoid rapid restart loops
+                        std::thread::sleep(Duration::from_millis(RESTART_DELAY_MS));
+
+                        // Spawn a new sidecar
+                        spawn_sidecar(&handle);
+                    } else {
+                        eprintln!(
+                            "Max restart attempts ({}) reached. Runtime will not be restarted.",
+                            MAX_RESTART_ATTEMPTS
+                        );
+                        *state.last_error.lock().unwrap() = Some(
+                            "Runtime failed to start after multiple attempts".to_string(),
+                        );
+                    }
                     break;
                 }
                 _ => {}

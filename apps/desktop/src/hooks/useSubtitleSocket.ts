@@ -12,6 +12,9 @@ import type {
   SubtitleSegment,
 } from "../types";
 
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY_MS = 1000; // 1 second
+
 export function useSubtitleSocket() {
   const [segments, setSegments] = useState<SubtitleSegment[]>([]);
   const [sessionStatus, setSessionStatus] = useState("idle");
@@ -19,19 +22,37 @@ export function useSubtitleSocket() {
   const [correctedIds, setCorrectedIds] = useState<Set<string>>(new Set());
   const [errorLog, setErrorLog] = useState<ErrorLogEntry[]>([]);
   const [diagnostics, setDiagnostics] = useState<PipelineDiagnostics>(emptyDiagnostics);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const reconnectTimer = useRef<number>();
 
   useEffect(() => {
     let closed = false;
     let socket: WebSocket | undefined;
+    let attempt = 0;
 
     const connect = () => {
       socket = new WebSocket(RUNTIME_WS);
-      socket.onopen = () => setSocketStatus("connected");
+      socket.onopen = () => {
+        setSocketStatus("connected");
+        setReconnectAttempt(0);
+        attempt = 0; // Reset attempt counter on successful connection
+      };
       socket.onclose = () => {
         setSocketStatus("disconnected");
         if (!closed) {
-          reconnectTimer.current = window.setTimeout(connect, 1200);
+          attempt++;
+          setReconnectAttempt(attempt);
+
+          if (attempt <= MAX_RECONNECT_ATTEMPTS) {
+            // Exponential backoff: 1s, 2s, 4s, 8s, ...
+            const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt - 1);
+            console.log(
+              `WebSocket reconnecting in ${delay}ms (attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS})`
+            );
+            reconnectTimer.current = window.setTimeout(connect, delay);
+          } else {
+            console.error(`WebSocket max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached`);
+          }
         }
       };
       socket.onerror = () => setSocketStatus("disconnected");
@@ -94,5 +115,6 @@ export function useSubtitleSocket() {
     setErrorLog,
     diagnostics,
     setDiagnostics,
+    reconnectAttempt,
   };
 }

@@ -31,9 +31,26 @@ $cargoContent = $cargoContent -replace 'version = ".*"', "version = `"$Version`"
 $cargoContent | Set-Content $cargoToml -Encoding UTF8
 Write-Host "  Updated apps/desktop/src-tauri/Cargo.toml"
 
+# Verify all files have the same version
+Write-Host "`nVerifying version consistency..."
+
+$desktopPkgCheck = (Get-Content $desktopPkg -Raw | ConvertFrom-Json).version
+$tauriConfCheck = (Get-Content $tauriConf -Raw | ConvertFrom-Json).version
+$cargoTomlCheck = (Get-Content $cargoToml -Raw | Select-String 'version = "(.*)"').Matches.Groups[1].Value
+
+if ($desktopPkgCheck -ne $Version -or $tauriConfCheck -ne $Version -or $cargoTomlCheck -ne $Version) {
+    Write-Error "Version mismatch detected! Expected: $Version"
+    Write-Host "  apps/desktop/package.json: $desktopPkgCheck"
+    Write-Host "  apps/desktop/src-tauri/tauri.conf.json: $tauriConfCheck"
+    Write-Host "  apps/desktop/src-tauri/Cargo.toml: $cargoTomlCheck"
+    exit 1
+}
+
+Write-Host "✓ All files have consistent version: $Version"
+
 Write-Host "`nVersion bumped to $Version in all files."
 Write-Host "Next steps:"
 Write-Host "  1. git add -A"
-Write-Host "  2. git commit -bchore: release v$Version"
+Write-Host "  2. git commit -m 'chore: release v$Version'"
 Write-Host "  3. git tag v$Version"
 Write-Host "  4. git push origin main --tags"
