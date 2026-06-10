@@ -11,6 +11,7 @@ struct RuntimeProcess {
     child: Mutex<Option<CommandChild>>,
     last_error: Mutex<Option<String>>,
     restart_count: Mutex<u32>,
+    is_shutting_down: Mutex<bool>,
 }
 
 const MAX_RESTART_ATTEMPTS: u32 = 3;
@@ -22,6 +23,7 @@ impl Default for RuntimeProcess {
             child: Mutex::new(None),
             last_error: Mutex::new(None),
             restart_count: Mutex::new(0),
+            is_shutting_down: Mutex::new(false),
         }
     }
 }
@@ -74,6 +76,11 @@ fn spawn_sidecar(handle: &tauri::AppHandle) {
                     let state = handle.state::<RuntimeProcess>();
                     *state.child.lock().unwrap() = None;
 
+                    // Skip auto-restart if app is shutting down
+                    if *state.is_shutting_down.lock().unwrap() {
+                        break;
+                    }
+
                     // Auto-restart logic
                     let mut restart_count = state.restart_count.lock().unwrap();
                     if *restart_count < MAX_RESTART_ATTEMPTS {
@@ -110,10 +117,22 @@ fn start_runtime_sidecar(app: &tauri::App) {
     spawn_sidecar(app.handle());
 }
 
+/// Kill a process and all its children on Windows using taskkill /F /T.
+#[cfg(target_os = "windows")]
+fn kill_process_tree(pid: u32) {
+    use std::process::Command;
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .spawn();
+}
+
 fn stop_runtime_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let state = app.state::<RuntimeProcess>();
+    *state.is_shutting_down.lock().unwrap() = true;
     let child = state.child.lock().unwrap().take();
     if let Some(child) = child {
+        #[cfg(target_os = "windows")]
+        kill_process_tree(child.pid());
         let _ = child.kill();
     }
 }
@@ -131,6 +150,8 @@ fn restart_runtime(handle: tauri::AppHandle) -> Result<(), String> {
         let state = handle.state::<RuntimeProcess>();
         let child = state.child.lock().unwrap().take();
         if let Some(child) = child {
+            #[cfg(target_os = "windows")]
+            kill_process_tree(child.pid());
             let _ = child.kill();
         }
         *state.last_error.lock().unwrap() = None;

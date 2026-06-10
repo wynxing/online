@@ -58,6 +58,9 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # Stop active session first to clean up audio threads and connections
+    if state.active_session:
+        await state.stop_session()
     await close_async_db()
 
 
