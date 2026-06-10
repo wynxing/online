@@ -11,6 +11,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# UTF-8 encoding without BOM (matches the rest of the repo's JSON files).
+# Use this for both reads and writes; default Get-Content/Set-Content
+# encoding is locale-dependent and unreliable for non-ASCII content.
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
 # Normalize version (strip leading 'v' for JSON, Tauri accepts both but let's be clean)
 $jsonVersion = $Version -replace '^v', ''
 
@@ -41,7 +46,7 @@ if ($nsisExe) {
         Write-Error "Signature file not found: $sigFile"
         exit 1
     }
-    $signature = (Get-Content $sigFile -Raw).Trim()
+    $signature = ([System.IO.File]::ReadAllText($sigFile, $utf8NoBom)).Trim()
     $platforms["windows-x86_64"] = @{
         signature = $signature
         url       = "$baseUrl/$($nsisExe.Name)"
@@ -55,7 +60,7 @@ if ($msiFile) {
         Write-Error "Signature file not found: $sigFile"
         exit 1
     }
-    $signature = (Get-Content $sigFile -Raw).Trim()
+    $signature = ([System.IO.File]::ReadAllText($sigFile, $utf8NoBom)).Trim()
     $platforms["windows-x86_64-msi"] = @{
         signature = $signature
         url       = "$baseUrl/$($msiFile.Name)"
@@ -70,7 +75,7 @@ $manifest = @{
     platforms = $platforms
 }
 
-$manifest | ConvertTo-Json -Depth 10 | Set-Content $OutputPath -Encoding UTF8
+$manifest | ConvertTo-Json -Depth 10 | Set-Content $OutputPath -Encoding UTF8NoBOM
 Write-Host "Generated update manifest: $OutputPath"
 Write-Host "  Version: $jsonVersion"
 Write-Host "  Platforms: $($platforms.Keys -join ', ')"
