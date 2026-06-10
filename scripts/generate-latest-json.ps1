@@ -28,6 +28,16 @@ if (-not $nsisExe -and -not $msiFile) {
     exit 1
 }
 
+# GitHub's release upload API sanitizes asset filenames by replacing spaces
+# with dots (e.g. "AI Interpretation Assistant_0.4.4_x64-setup.exe" is stored
+# as "AI.Interpretation.Assistant_0.4.4_x64-setup.exe"). The Tauri NSIS
+# bundler keeps spaces in the on-disk filename, so the .sig file's
+# `FILE:` comment is also space-separated, but the GitHub URL is dot-separated.
+# We mirror GitHub's sanitization here so the manifest URL matches the asset
+# name GitHub actually stored. Without this, the download request 404s.
+$nsisExeName = if ($nsisExe) { $nsisExe.Name -replace ' ', '.' } else { $null }
+$msiName     = if ($msiFile) { $msiFile.Name -replace ' ', '.' } else { $null }
+
 $platforms = @{}
 
 # GitHub Releases base URL for asset downloads
@@ -49,9 +59,9 @@ if ($nsisExe) {
     $signature = ([System.IO.File]::ReadAllText($sigFile, $utf8NoBom)).Trim()
     $platforms["windows-x86_64"] = @{
         signature = $signature
-        url       = "$baseUrl/$($nsisExe.Name)"
+        url       = "$baseUrl/$nsisExeName"
     }
-    Write-Host "  Registered NSIS: $($nsisExe.Name)"
+    Write-Host "  Registered NSIS: $nsisExeName (local: $($nsisExe.Name))"
 }
 
 if ($msiFile) {
@@ -63,9 +73,9 @@ if ($msiFile) {
     $signature = ([System.IO.File]::ReadAllText($sigFile, $utf8NoBom)).Trim()
     $platforms["windows-x86_64-msi"] = @{
         signature = $signature
-        url       = "$baseUrl/$($msiFile.Name)"
+        url       = "$baseUrl/$msiName"
     }
-    Write-Host "  Registered MSI: $($msiFile.Name)"
+    Write-Host "  Registered MSI: $msiName (local: $($msiFile.Name))"
 }
 
 $manifest = @{
@@ -75,7 +85,11 @@ $manifest = @{
     platforms = $platforms
 }
 
-$manifest | ConvertTo-Json -Depth 10 | Set-Content $OutputPath -Encoding UTF8NoBOM
+$json = $manifest | ConvertTo-Json -Depth 10
+# Set-Content -Encoding UTF8NoBOM works on pwsh 7 but is invalid on Windows
+# PowerShell 5.1, where the valid values are 'UTF8' (with BOM) or 'Default'.
+# WriteAllText with a UTF8 BOM-less encoding works on both.
+[System.IO.File]::WriteAllText($OutputPath, $json, $utf8NoBom)
 Write-Host "Generated update manifest: $OutputPath"
 Write-Host "  Version: $jsonVersion"
 Write-Host "  Platforms: $($platforms.Keys -join ', ')"
