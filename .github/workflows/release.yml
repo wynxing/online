@@ -75,6 +75,20 @@ jobs:
         shell: pwsh
         run: .\scripts\build-runtime-sidecar.ps1
 
+      - name: Verify sidecar is up-to-date
+        shell: python
+        run: |
+          import os, sys
+          spec = r"runtime\ai-interpretation-runtime.spec"
+          binary = r"apps\desktop\src-tauri\binaries\ai-interpretation-runtime-x86_64-pc-windows-msvc.exe"
+          spec_mtime = os.path.getmtime(spec)
+          binary_mtime = os.path.getmtime(binary)
+          if spec_mtime > binary_mtime:
+              print(f"ERROR: sidecar binary is stale — spec ({spec}) is newer than binary ({binary})")
+              print(f"       spec_mtime={spec_mtime}, binary_mtime={binary_mtime}")
+              sys.exit(1)
+          print(f"OK: sidecar binary is up-to-date")
+
       - name: Build Tauri bundles
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
