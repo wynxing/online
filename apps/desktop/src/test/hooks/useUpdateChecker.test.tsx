@@ -67,6 +67,64 @@ beforeEach(() => {
 });
 
 describe("useUpdateChecker", () => {
+  it("reports an available update after the startup check", async () => {
+    const update = makeUpdate({ download: vi.fn(async () => undefined) });
+    mocks.check.mockResolvedValue(update);
+
+    const { result } = renderHook(() => useUpdateChecker());
+
+    await waitFor(() => expect(result.current.status).toBe("available"));
+    expect(result.current.updateInfo).toEqual({
+      version: "0.4.11",
+      date: "2026-06-10",
+      notes: "test update",
+    });
+    expect(result.current.error).toBeNull();
+  });
+
+  it("stays idle when the startup check finds no update", async () => {
+    mocks.check.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useUpdateChecker());
+
+    await waitFor(() => expect(mocks.check).toHaveBeenCalledTimes(1));
+    expect(result.current.status).toBe("idle");
+    expect(result.current.updateInfo).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  it("reports startup check errors even without update info", async () => {
+    mocks.check.mockRejectedValue(new Error("manifest unavailable"));
+
+    const { result } = renderHook(() => useUpdateChecker());
+
+    await waitFor(() => expect(result.current.status).toBe("error"));
+    expect(result.current.updateInfo).toBeNull();
+    expect(result.current.error).toBe("manifest unavailable");
+  });
+
+  it("retries the update check before downloading", async () => {
+    const update = makeUpdate({
+      download: vi.fn(async () => undefined),
+      install: vi.fn(async () => undefined),
+    });
+    mocks.check.mockRejectedValueOnce(new Error("network failed")).mockResolvedValueOnce(update);
+
+    const { result } = renderHook(() => useUpdateChecker());
+
+    await waitFor(() => expect(result.current.status).toBe("error"));
+
+    await act(async () => {
+      await result.current.downloadAndInstall();
+    });
+
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(result.current.updateInfo?.version).toBe("0.4.11");
+    expect(update.download).toHaveBeenCalledTimes(1);
+    expect(update.install).toHaveBeenCalledTimes(1);
+    expect(result.current.status).toBe("ready");
+  });
+
   it("downloads, stops runtime, installs, then relaunches in order", async () => {
     const order: string[] = [];
     const update = makeUpdate({

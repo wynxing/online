@@ -18,12 +18,17 @@ export function UpdateBanner({
   onUpdate,
   onDismiss,
 }: UpdateBannerProps) {
-  if (status === "idle" || status === "checking" || !updateInfo) {
+  if (status === "idle" || status === "checking") {
+    return null;
+  }
+
+  if (status !== "error" && !updateInfo) {
     return null;
   }
 
   const progressPercent =
     progress.total > 0 ? Math.round((progress.downloaded / progress.total) * 100) : 0;
+  const version = updateInfo?.version ?? "";
 
   return (
     <div className={`update-banner ${status === "error" ? "update-banner--error" : ""}`}>
@@ -31,17 +36,17 @@ export function UpdateBanner({
         <Download size={16} />
         <div className="update-banner__info">
           {status === "error" ? (
-            <span>更新检查失败：{error}</span>
+            <span>更新检查失败：{error ?? "未知错误"}</span>
           ) : status === "downloading" ? (
             <span>
-              正在下载 v{updateInfo.version}… {progressPercent}%
+              正在下载 v{version}... {progressPercent}%
             </span>
           ) : status === "ready" ? (
-            <span>更新已安装，正在重启…</span>
+            <span>更新已安装，正在重启...</span>
           ) : (
             <span>
-              发现新版本 <strong>v{updateInfo.version}</strong>
-              {updateInfo.notes && ` — ${updateInfo.notes}`}
+              发现新版本 <strong>v{version}</strong>
+              {updateInfo?.notes && ` - ${updateInfo.notes}`}
             </span>
           )}
         </div>

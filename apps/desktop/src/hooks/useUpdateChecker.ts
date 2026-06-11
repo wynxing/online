@@ -24,8 +24,9 @@ export function useUpdateChecker() {
   const [error, setError] = useState<string | null>(null);
   const dismissedRef = useRef(false);
 
-  const downloadAndInstall = useCallback(async () => {
-    if (!("__TAURI_INTERNALS__" in window)) return;
+  const checkForUpdate = useCallback(async (isCancelled?: () => boolean) => {
+    if (dismissedRef.current) return null;
+    if (!("__TAURI_INTERNALS__" in window)) return null;
 
     try {
       setStatus("checking");
@@ -34,10 +35,36 @@ export function useUpdateChecker() {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
 
-      if (!update) {
-        setStatus("idle");
-        return;
+      if (isCancelled?.()) return null;
+
+      if (update) {
+        setUpdateInfo({
+          version: update.version,
+          date: update.date ?? undefined,
+          notes: update.body ?? undefined,
+        });
+        setStatus("available");
+        return update;
       }
+
+      setUpdateInfo(null);
+      setStatus("idle");
+      return null;
+    } catch (err: unknown) {
+      if (isCancelled?.()) return null;
+      setUpdateInfo(null);
+      setError(toErrorMessage(err));
+      setStatus("error");
+      return null;
+    }
+  }, []);
+
+  const downloadAndInstall = useCallback(async () => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+
+    try {
+      const update = await checkForUpdate();
+      if (!update) return;
 
       setStatus("downloading");
       setProgress({ downloaded: 0, total: 0 });
@@ -94,7 +121,7 @@ export function useUpdateChecker() {
       setError(toErrorMessage(err));
       setStatus("error");
     }
-  }, []);
+  }, [checkForUpdate]);
 
   const dismiss = useCallback(() => {
     dismissedRef.current = true;
@@ -105,42 +132,15 @@ export function useUpdateChecker() {
 
   useEffect(() => {
     let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void checkForUpdate(() => cancelled);
+    }, 0);
 
-    async function check() {
-      if (dismissedRef.current) return;
-      if (!("__TAURI_INTERNALS__" in window)) return;
-
-      try {
-        setStatus("checking");
-        setError(null);
-
-        const { check: checkUpdater } = await import("@tauri-apps/plugin-updater");
-        const update = await checkUpdater();
-
-        if (cancelled) return;
-
-        if (update) {
-          setUpdateInfo({
-            version: update.version,
-            date: update.date ?? undefined,
-            notes: update.body ?? undefined,
-          });
-          setStatus("available");
-        } else {
-          setStatus("idle");
-        }
-      } catch (err: unknown) {
-        if (cancelled) return;
-        setError(toErrorMessage(err));
-        setStatus("error");
-      }
-    }
-
-    void check();
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
-  }, []);
+  }, [checkForUpdate]);
 
   return {
     status,
