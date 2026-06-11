@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-interpretation-desktop"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "serde",
  "serde_json",
