@@ -6,6 +6,7 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
+use wait_timeout::ChildExt;
 
 struct RuntimeProcess {
     child: Mutex<Option<CommandChild>>,
@@ -16,6 +17,9 @@ struct RuntimeProcess {
 
 const MAX_RESTART_ATTEMPTS: u32 = 3;
 const RESTART_DELAY_MS: u64 = 2000;
+
+/// Upper bound for taskkill to terminate the sidecar tree before we give up.
+const KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Default for RuntimeProcess {
     fn default() -> Self {
@@ -55,7 +59,8 @@ fn spawn_sidecar(handle: &tauri::AppHandle) {
         let state = handle.state::<RuntimeProcess>();
         *state.child.lock().unwrap() = Some(child);
         *state.last_error.lock().unwrap() = None;
-        *state.restart_count.lock().unwrap() = 0;  // Reset restart count on successful spawn
+        *state.restart_count.lock().unwrap() = 0; // Reset restart count on successful spawn
+        *state.is_shutting_down.lock().unwrap() = false;
     }
 
     let handle = handle.clone();
@@ -118,23 +123,53 @@ fn start_runtime_sidecar(app: &tauri::App) {
 }
 
 /// Kill a process and all its children on Windows using taskkill /F /T.
+/// Blocks until taskkill exits or `KILL_TIMEOUT` elapses.
 #[cfg(target_os = "windows")]
-fn kill_process_tree(pid: u32) {
-    use std::process::Command;
-    let _ = Command::new("taskkill")
+fn kill_process_tree(pid: u32) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
-        .spawn();
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    match child.wait_timeout(KILL_TIMEOUT)? {
+        Some(status) => {
+            if !status.success() {
+                eprintln!("taskkill /F /T /PID {} exited with {:?}", pid, status.code());
+            }
+            Ok(())
+        }
+        None => {
+            eprintln!("taskkill /F /T /PID {} timed out; killing taskkill", pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            Ok(())
+        }
+    }
 }
 
-fn stop_runtime_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+#[cfg(not(target_os = "windows"))]
+fn kill_process_tree(_pid: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn stop_runtime_sidecar_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let state = app.state::<RuntimeProcess>();
+    // Set shutdown flag FIRST so any Terminated event arriving during
+    // taskkill takes the "no restart" branch and doesn't clear `child`
+    // out from under us.
     *state.is_shutting_down.lock().unwrap() = true;
     let child = state.child.lock().unwrap().take();
     if let Some(child) = child {
-        #[cfg(target_os = "windows")]
-        kill_process_tree(child.pid());
+        if let Err(e) = kill_process_tree(child.pid()) {
+            eprintln!("kill_process_tree failed for pid {}: {e}", child.pid());
+        }
         let _ = child.kill();
     }
+}
+
+fn stop_runtime_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    stop_runtime_sidecar_inner(app);
 }
 
 #[tauri::command]
@@ -150,13 +185,24 @@ fn restart_runtime(handle: tauri::AppHandle) -> Result<(), String> {
         let state = handle.state::<RuntimeProcess>();
         let child = state.child.lock().unwrap().take();
         if let Some(child) = child {
-            #[cfg(target_os = "windows")]
-            kill_process_tree(child.pid());
+            if let Err(e) = kill_process_tree(child.pid()) {
+                eprintln!("kill_process_tree failed for pid {}: {e}", child.pid());
+            }
             let _ = child.kill();
         }
         *state.last_error.lock().unwrap() = None;
+        *state.is_shutting_down.lock().unwrap() = false;
     }
     spawn_sidecar(&handle);
+    Ok(())
+}
+
+/// Synchronously stop the runtime sidecar. The frontend MUST await this
+/// before calling `relaunch()` so the OS releases the file handle on the
+/// sidecar executable before the auto-updater installer tries to write it.
+#[tauri::command]
+fn stop_runtime(handle: tauri::AppHandle) -> Result<(), String> {
+    stop_runtime_sidecar_inner(&handle);
     Ok(())
 }
 
@@ -170,7 +216,7 @@ pub fn run() {
             start_runtime_sidecar(app);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_status, restart_runtime])
+        .invoke_handler(tauri::generate_handler![runtime_status, restart_runtime, stop_runtime])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

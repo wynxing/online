@@ -143,3 +143,8 @@ export function restartRuntime(): Promise<void> {
   if (isDev) return Promise.resolve();
   return invoke("restart_runtime");
 }
+
+export function stopRuntime(): Promise<void> {
+  if (isDev) return Promise.resolve();
+  return invoke("stop_runtime");
+}

@@ -13,6 +13,10 @@ export interface DownloadProgress {
 
 export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "error";
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function useUpdateChecker() {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -38,7 +42,7 @@ export function useUpdateChecker() {
       setStatus("downloading");
       setProgress({ downloaded: 0, total: 0 });
 
-      await update.downloadAndInstall((event) => {
+      await update.download((event) => {
         switch (event.event) {
           case "Started":
             setProgress({ downloaded: 0, total: event.data.contentLength ?? 0 });
@@ -57,11 +61,37 @@ export function useUpdateChecker() {
 
       setStatus("ready");
 
+      let runtimeStopped = false;
+      try {
+        const { stopRuntime } = await import("../api");
+        await stopRuntime();
+        runtimeStopped = true;
+      } catch (e) {
+        throw Object.assign(
+          new Error(`Failed to stop runtime before installing update: ${toErrorMessage(e)}`),
+          { cause: e }
+        );
+      }
+
+      try {
+        await update.install();
+      } catch (installError) {
+        if (runtimeStopped) {
+          try {
+            const { restartRuntime } = await import("../api");
+            await restartRuntime();
+            runtimeStopped = false;
+          } catch (restartError) {
+            console.warn("restartRuntime failed after update install error:", restartError);
+          }
+        }
+        throw installError;
+      }
+
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setError(toErrorMessage(err));
       setStatus("error");
     }
   }, []);
@@ -101,8 +131,7 @@ export function useUpdateChecker() {
         }
       } catch (err: unknown) {
         if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
+        setError(toErrorMessage(err));
         setStatus("error");
       }
     }
