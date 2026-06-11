@@ -308,6 +308,7 @@ function MainConsole() {
   }
 
   async function openFloatingWindow() {
+    window.localStorage.setItem("fontSize", String(config.fontSize));
     const tauriAvailable = "__TAURI_INTERNALS__" in window;
     if (tauriAvailable) {
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");

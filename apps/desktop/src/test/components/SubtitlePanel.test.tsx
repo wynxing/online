@@ -49,6 +49,16 @@ describe("SubtitlePanel", () => {
     expect(screen.getByText("Hello")).toBeInTheDocument();
   });
 
+  it("passes configured font size to rendered subtitle text", () => {
+    const segments = [
+      makeSegment({ sourceText: "Scaled source", translatedText: "Scaled translation" }),
+    ];
+    renderPanel({ segments, fontSize: 32 });
+
+    expect(screen.getByText("Scaled source")).toHaveStyle({ fontSize: "24px" });
+    expect(screen.getByText("Scaled translation")).toHaveStyle({ fontSize: "32px" });
+  });
+
   it("renders session status strip", () => {
     renderPanel({ sessionStatus: "running", activeSessionTitle: "Test Session" });
     expect(screen.getByText("Test Session")).toBeInTheDocument();
@@ -71,9 +81,7 @@ describe("SubtitlePanel", () => {
   });
 
   it("shows error log entries", () => {
-    const errorLog = [
-      { code: "E001", message: "Connection failed", time: "12:00:00" },
-    ];
+    const errorLog = [{ code: "E001", message: "Connection failed", time: "12:00:00" }];
     renderPanel({ errorLog });
     expect(screen.getByText("Connection failed")).toBeInTheDocument();
     expect(screen.getByText("E001")).toBeInTheDocument();
