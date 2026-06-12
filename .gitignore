@@ -6,7 +6,7 @@ __pycache__/
 *.pyc
 runtime/data/
 apps/desktop/src-tauri/gen/
-apps/desktop/src-tauri/binaries/*.exe
+apps/desktop/src-tauri/binaries/ai-interpretation-runtime-*
 build/
 .codebuddy/
 .pytest_cache/

@@ -61,3 +61,48 @@ jobs:
 
       - name: Test with coverage
         run: cd runtime && python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing
+
+  sidecar:
+    name: Sidecar Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux audio/build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: runtime/requirements*.txt
+
+      - name: Install runtime dependencies
+        run: python -m pip install -r runtime/requirements.txt
+
+      - name: Build sidecar
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: npm run runtime:sidecar

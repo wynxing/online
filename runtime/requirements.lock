@@ -22,6 +22,8 @@ certifi==2026.5.20
     # via
     #   httpcore
     #   httpx
+cffi==2.0.0
+    # via sounddevice
 click==8.4.1
     # via uvicorn
 colorama==0.4.6
@@ -46,8 +48,10 @@ idna==3.18
     #   httpx
 numpy==2.4.6
     # via -r requirements.in
-pyaudiowpatch==0.2.12.8
+pyaudiowpatch==0.2.12.8 ; sys_platform == "win32"
     # via -r requirements.in
+pycparser==3.0
+    # via cffi
 pydantic==2.13.4
     # via
     #   -r requirements.in
@@ -60,6 +64,8 @@ python-dotenv==1.2.2
     #   uvicorn
 pyyaml==6.0.3
     # via uvicorn
+sounddevice==0.5.5
+    # via -r requirements.in
 starlette==1.2.1
     # via fastapi
 typing-extensions==4.15.0

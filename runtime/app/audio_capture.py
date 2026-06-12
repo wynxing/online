@@ -1,4 +1,4 @@
-"""WASAPI loopback and microphone audio capture."""
+"""Cross-platform audio capture."""
 
 from __future__ import annotations
 
@@ -7,18 +7,19 @@ import contextlib
 import logging
 import threading
 
+from .audio_backends import AudioDeviceInfo, open_audio_stream
+
 logger = logging.getLogger("pipeline.audio")
 
 
 class AudioCapture:
-    """Read PyAudio PCM frames on a worker thread and enqueue them on the event loop."""
+    """Read PCM frames on a worker thread and enqueue them on the event loop."""
 
-    def __init__(self, device_index: int, sample_rate: int = 48000, channels: int = 2) -> None:
-        self._device_index = device_index
+    def __init__(self, device: AudioDeviceInfo, sample_rate: int = 48000, channels: int = 2) -> None:
+        self._device = device
         self._sample_rate = sample_rate
         self._channels = channels
         self._stream = None
-        self._pa = None
         self._running = False
         self._thread: threading.Thread | None = None
         self._queue: asyncio.Queue[bytes] | None = None
@@ -33,8 +34,8 @@ class AudioCapture:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         logger.info(
-            "Audio capture started: device=%d, rate=%d, channels=%d",
-            self._device_index,
+            "Audio capture started: device=%s, rate=%d, channels=%d",
+            self._device.id,
             self._sample_rate,
             self._channels,
         )
@@ -51,31 +52,19 @@ class AudioCapture:
         return self._running
 
     def _run(self) -> None:
-        import pyaudiowpatch as pyaudio
-
-        pa = None
         stream = None
         try:
-            pa = pyaudio.PyAudio()
-            stream = pa.open(
-                format=pyaudio.paInt16,
-                channels=self._channels,
-                rate=self._sample_rate,
-                input=True,
-                input_device_index=self._device_index,
-                frames_per_buffer=1024,
-            )
-            self._pa = pa
+            stream = open_audio_stream(self._device, blocksize=1024)
             self._stream = stream
 
             warmup_frames = int(self._sample_rate / 1024 * 0.5)
             for _ in range(warmup_frames):
-                stream.read(1024, exception_on_overflow=False)
+                stream.read(1024)
             logger.info("Audio warmup completed, discardedFrames=%d", warmup_frames)
 
             while self._running:
                 try:
-                    data = stream.read(1024, exception_on_overflow=False)
+                    data = stream.read(1024)
                     if self._loop and self._running:
                         self._loop.call_soon_threadsafe(self._enqueue_frame, data)
                 except Exception as e:
@@ -88,14 +77,8 @@ class AudioCapture:
             self._running = False
         finally:
             if stream:
-                try:
-                    stream.stop_stream()
-                    stream.close()
-                except Exception:
-                    pass
-            if pa:
                 with contextlib.suppress(Exception):
-                    pa.terminate()
+                    stream.close()
 
     def _enqueue_frame(self, data: bytes) -> None:
         if not self._queue or not self._running:

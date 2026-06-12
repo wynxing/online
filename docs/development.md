@@ -101,7 +101,8 @@ app/
 ├── state.py                 # 运行时状态管理
 ├── storage.py               # SQLite 存储层
 ├── devices.py               # 音频设备枚举
-├── audio_capture.py         # WASAPI 音频采集
+├── audio_backends.py        # Windows/macOS/Linux 音频后端枚举与打开
+├── audio_capture.py         # 跨平台 PCM 采集线程
 ├── segmenter.py             # VAD 音频分段
 ├── asr_provider.py          # ASR provider（Whisper / Chat）
 ├── translation_provider.py  # 翻译 provider（OpenAI 兼容）

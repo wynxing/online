@@ -78,7 +78,8 @@ WebSocketBroadcaster
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| AudioCapture | `audio_capture.py` | WASAPI 线程采集系统/麦克风音频，PCM 帧入队 |
+| AudioBackends | `audio_backends.py` | 按平台枚举/打开音频设备：Windows WASAPI、macOS/Linux PortAudio |
+| AudioCapture | `audio_capture.py` | 跨平台采集 PCM 帧并入队 |
 | SegmentProcessor | `pipeline/segment_processor.py` | 消费 PCM 帧，喂入 VAD 分段器，完成片段入队 |
 | ASRWorker | `pipeline/asr_worker.py` | 消费音频片段，转 WAV，调用 ASR API，清洗文本，发送 `segment.created` |
 | TranslationWorker | `pipeline/translation_worker.py` | 消费识别文本，流式翻译，句子连续性管理，发送 `segment.updated/corrected` |

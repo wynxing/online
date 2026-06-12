@@ -6,6 +6,8 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from ..audio_backends import get_audio_device_info, is_system_audio_device
+from ..audio_backends import parse_device_index as _parse_device_index
 from ..models import RuntimeConfig, RuntimeErrorPayload
 from .constants import _SEGMENT_SEQUENCE_RE
 
@@ -120,23 +122,15 @@ async def broadcast_stopped(session_id: str, broadcast: Broadcast) -> None:
 
 
 def is_loopback_device(device_id: str) -> bool:
-    return device_id.startswith("wasapi_loopback_")
+    return is_system_audio_device(device_id)
 
 
 def parse_device_index(device_id: str) -> int | None:
-    parts = device_id.split("_")
-    try:
-        return int(parts[-1])
-    except (ValueError, IndexError):
-        return None
+    return _parse_device_index(device_id)
 
 
-def get_device_params(device_index: int) -> tuple[int, int]:
-    import pyaudiowpatch as pyaudio
-
-    pa = pyaudio.PyAudio()
-    try:
-        info = pa.get_device_info_by_index(device_index)
-        return int(info["defaultSampleRate"]), int(info["maxInputChannels"])
-    finally:
-        pa.terminate()
+def get_device_params(device_id: str) -> tuple[int, int]:
+    device = get_audio_device_info(device_id)
+    if not device:
+        raise ValueError(f"Unknown audio device: {device_id}")
+    return device.sample_rate, device.channels

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ..asr_provider import ChatCompletionASRProvider, OpenAICompatibleASRProvider
+from ..audio_backends import get_audio_device_info
 from ..audio_capture import AudioCapture
 from ..models import GlossaryTerm, RuntimeConfig
 from ..segmenter import AudioSegmenter
@@ -94,8 +95,9 @@ async def run_real_subtitle_pipeline(
         {"sessionId": session_id, "status": "running", "updatedAt": now_iso()},
     )
 
-    device_index = parse_device_index(device_id)
-    if device_index is None:
+    device = get_audio_device_info(device_id)
+    device_index = parse_device_index(device.id) if device else None
+    if device is None or device_index is None:
         await broadcast_error(
             broadcast,
             "AUDIO_DEVICE_INVALID",
@@ -105,18 +107,18 @@ async def run_real_subtitle_pipeline(
         await broadcast_stopped(session_id, broadcast)
         return
 
-    sample_rate, channels = get_device_params(device_index)
-    loopback = is_loopback_device(device_id)
+    sample_rate, channels = get_device_params(device.id)
+    loopback = is_loopback_device(device.id)
     logger.info(
         "Using audio device: id=%s, index=%d, rate=%d, channels=%d, loopback=%s",
-        device_id,
+        device.id,
         device_index,
         sample_rate,
         channels,
         loopback,
     )
 
-    capture = AudioCapture(device_index, sample_rate, channels)
+    capture = AudioCapture(device, sample_rate, channels)
     segmenter = _create_segmenter(config, sample_rate, channels, loopback)
     asr = create_asr_provider(config)
     translation = RealTranslationProvider(

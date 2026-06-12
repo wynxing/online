@@ -1,15 +1,16 @@
 # 构建与部署
 
-本文档描述项目的构建流程、CI/CD 配置和发布流程。
+本文档说明项目的本地构建、sidecar 打包、CI/CD 发布和自动更新 manifest 生成流程。
 
 ## 构建产物
 
-| 产物 | 说明 |
-|------|------|
-| Python Runtime sidecar | PyInstaller 打包的独立可执行文件 |
-| Tauri NSIS 安装包 | Windows 安装程序（.exe） |
-| Tauri MSI 安装包 | Windows Installer 包（.msi） |
-| Updater manifest | `latest.json`，用于自动更新检测 |
+| 产物 | 平台 | 说明 |
+|------|------|------|
+| Python Runtime sidecar | Windows/macOS/Linux | PyInstaller 打包的独立运行时，可执行文件随 Tauri bundle 分发 |
+| NSIS / MSI | Windows x64 | Windows 安装包 |
+| DMG / app bundle | macOS x64/arm64 | macOS 安装与应用包 |
+| AppImage / DEB | Linux x64 | Linux 桌面分发包 |
+| `latest.json` | 全平台 | Tauri updater 使用的多平台更新 manifest |
 
 ## 本地构建
 
@@ -18,128 +19,132 @@
 - Node.js 22+
 - Python 3.10+
 - Rust stable
-- 所有依赖已安装
+- 当前平台的 Tauri 系统依赖
+- Linux 需要 PortAudio 与 WebKitGTK 相关开发库，例如 CI 中使用的 `portaudio19-dev`、`libwebkit2gtk-4.1-dev` 等
 
-### 构建 Python Runtime Sidecar
+### 构建 Python Runtime sidecar
 
-```powershell
+```bash
 npm run runtime:sidecar
 ```
 
-此命令调用 `scripts/build-runtime-sidecar.ps1`，使用 PyInstaller 将 Python Runtime 打包为单个可执行文件，输出到 `apps/desktop/src-tauri/binaries/` 目录。
+该命令调用 `scripts/build-runtime-sidecar.mjs`，运行 PyInstaller，并根据当前平台或 `TARGET_TRIPLE` 环境变量输出 Tauri sidecar 文件：
+
+```text
+apps/desktop/src-tauri/binaries/ai-interpretation-runtime-{targetTriple}[.exe]
+```
+
+常用 target triple：
+
+| 平台 | target triple |
+|------|---------------|
+| Windows x64 | `x86_64-pc-windows-msvc` |
+| macOS x64 | `x86_64-apple-darwin` |
+| macOS arm64 | `aarch64-apple-darwin` |
+| Linux x64 | `x86_64-unknown-linux-gnu` |
+
+交叉指定示例：
+
+```bash
+TARGET_TRIPLE=x86_64-unknown-linux-gnu npm run runtime:sidecar
+```
+
+注意：PyInstaller 通常需要在目标 OS 上构建对应 sidecar，不建议依赖跨 OS 交叉打包。
 
 ### 完整本地 Release 构建
 
-```powershell
+```bash
 npm run release:local
 ```
 
-此命令调用 `scripts/build-release-local.ps1`，依次执行：
+该命令调用 `scripts/build-release-local.mjs`，依次执行：
 
-1. `npm install` — 安装前端依赖
-2. `pip install -r runtime/requirements.txt` — 安装 Python 依赖
-3. PyInstaller 构建 sidecar
-4. `tauri build` — 构建 Tauri 安装包
-
-输出目录：`build/release/`
+1. `npm install`
+2. `python -m pip install -r runtime/requirements.txt`
+3. `npm run runtime:sidecar`
+4. `npm run tauri -- build`
 
 ## CI/CD
 
-### CI 流水线 (`.github/workflows/ci.yml`)
+### CI workflow
 
-触发条件：push 或 PR 到 `main` 分支。
+`.github/workflows/ci.yml` 包含三类检查：
 
-**Frontend Job** (ubuntu, Node 22)：
+- Frontend：`npm ci`、lint、TypeScript/Vite build、Vitest
+- Runtime：安装 Python 依赖、Ruff、pytest coverage
+- Sidecar matrix：在 Windows x64、macOS x64、macOS arm64、Linux x64 上分别构建 PyInstaller sidecar
 
-```text
-npm install → npm run lint → npm run build → npm run test
+### Release workflow
+
+`.github/workflows/release.yml` 在推送 `v*` tag 或手动触发时运行。
+
+Build matrix：
+
+| Job | Runner | target |
+|-----|--------|--------|
+| Windows x64 | `windows-latest` | `x86_64-pc-windows-msvc` |
+| macOS x64 | `macos-15-intel` | `x86_64-apple-darwin` |
+| macOS arm64 | `macos-15` | `aarch64-apple-darwin` |
+| Linux x64 | `ubuntu-latest` | `x86_64-unknown-linux-gnu` |
+
+每个平台 job 会：
+
+1. 安装 Node、Python、Rust 与平台依赖
+2. 运行前端 lint/test
+3. 运行 Runtime lint/test
+4. 构建 Python sidecar
+5. 执行 `tauri build --target {target}`
+6. 上传 bundle artifact
+
+Publish job 会下载所有平台 artifact，调用 `scripts/generate-latest-json.mjs` 生成统一 `latest.json`，然后把安装包、签名文件和 manifest 上传到 GitHub Releases。
+
+## Updater manifest
+
+`latest.json` 由 `scripts/generate-latest-json.mjs` 生成，按文件类型和路径推断平台 key：
+
+| 产物 | updater platform key |
+|------|----------------------|
+| NSIS `.exe` | `windows-x86_64` |
+| MSI `.msi` | `windows-x86_64-msi` |
+| macOS arm64 `.dmg` | `darwin-aarch64` |
+| macOS x64 `.dmg` | `darwin-x86_64` |
+| Linux x64 AppImage/DEB | `linux-x86_64` |
+
+手动生成示例：
+
+```bash
+GITHUB_REPO=owner/repo node scripts/generate-latest-json.mjs \
+  --version v0.4.13 \
+  --bundle-dir apps/desktop/src-tauri/target/release/bundle \
+  --output-path apps/desktop/src-tauri/target/release/bundle/latest.json
 ```
 
-**Runtime Job** (ubuntu, Python 3.13)：
+## 音频平台依赖
 
-```text
-pip install → ruff check → ruff format --check → pytest --cov
-```
-
-### Release 流水线 (`.github/workflows/release.yml`)
-
-触发条件：推送 `v*` tag 或手动触发。
-
-**单 Job** (Windows)：
-
-```text
-1. Lint + Test（前端 + Python）
-2. PyInstaller 构建 sidecar
-3. Tauri build（NSIS + MSI）
-4. 生成 latest.json updater manifest
-5. 上传所有产物到 GitHub Releases
-```
-
-### Updater 机制
-
-应用内置 Tauri updater 插件，启动时检查 GitHub Releases 上的 `latest.json`，发现新版本后提示用户下载安装。
-
-Updater 配置位于 `apps/desktop/src-tauri/tauri.conf.json`：
-
-```json
-{
-  "plugins": {
-    "updater": {
-      "pubkey": "...",
-      "endpoints": [
-        "https://github.com/your-username/ai-simultaneous-interpretation-assistant/releases/latest/download/latest.json"
-      ]
-    }
-  }
-}
-```
+- Windows：使用 `pyaudiowpatch` 枚举并采集 WASAPI loopback。
+- macOS：使用 `sounddevice`/PortAudio；系统音频需要 BlackHole、Loopback、Soundflower 等虚拟输入设备。
+- Linux：使用 `sounddevice`/PortAudio；系统音频优先使用 PulseAudio/PipeWire monitor source。
+- 没有可用真实设备时，Runtime 返回 mock 设备，应用可继续启动用于演示或前端开发。
 
 ## 发布流程
 
-### 版本号管理
-
-项目遵循 [Semantic Versioning](https://semver.org/)：
-
-- `MAJOR.MINOR.PATCH`（如 `0.2.0`）
-- 使用 `npm run version:bump` 脚本更新版本号
-
-### 发布步骤
-
-```powershell
-# 1. 确保 main 分支最新
+```bash
 git checkout main
 git pull origin main
-
-# 2. 更新版本号
 npm run version:bump
-
-# 3. 提交版本变更
 git add -A
-git commit -m "chore: release v0.2.0"
-
-# 4. 创建 tag 并推送
-git tag v0.2.0
+git commit -m "chore: release v0.4.13"
+git tag v0.4.13
 git push origin main --tags
 ```
 
-推送 tag 后，GitHub Actions 自动构建并发布到 Releases。
-
-### 手动触发 Release
-
-可在 GitHub Actions 页面手动触发 `release.yml` workflow。
-
-## 环境变量
-
-| 变量 | 默认值 | 构建时 | 运行时 |
-|------|--------|--------|--------|
-| `ONLINE_DATA_DIR` | `~/.online/` | ✗ | ✓ |
-| `ONLINE_RUNTIME_PORT` | `8765` | ✗ | ✓ |
+推送 tag 后，GitHub Actions 会构建多平台安装包并发布到 Releases。
 
 ## 目录约定
 
 | 路径 | 用途 |
 |------|------|
 | `apps/desktop/src-tauri/binaries/` | PyInstaller sidecar 输出位置 |
-| `build/release/` | Tauri 构建产物 |
-| `dist/` | 分发输出 |
-| `~/.online/` | 运行时数据（SQLite、配置、日志） |
+| `apps/desktop/src-tauri/target/*/release/bundle/` | Tauri 平台 bundle 输出 |
+| `dist/` | PyInstaller 输出目录 |
+| `~/.online/` | 运行时数据目录 |

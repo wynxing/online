@@ -33,22 +33,33 @@ GET /api/devices
 {
   "devices": [
     {
-      "id": "loopback_0",
+      "id": "wasapi_loopback_1",
       "name": "Speakers (Realtek Audio)",
-      "type": "loopback",
-      "isDefault": true
+      "kind": "system",
+      "isDefault": true,
+      "available": true,
+      "description": "Windows WASAPI loopback for system audio capture."
     },
     {
-      "id": "mic_0",
-      "name": "Microphone (USB Audio)",
-      "type": "microphone",
-      "isDefault": false
+      "id": "coreaudio_virtual_0",
+      "name": "BlackHole 2ch",
+      "kind": "system",
+      "isDefault": false,
+      "available": true,
+      "description": "macOS virtual audio input for system audio capture."
     }
   ]
 }
 ```
 
-设备类型：`loopback`（系统音频）、`microphone`（麦克风）、`mock`（模拟设备）。
+设备类型使用 `kind` 字段：`system`（系统音频）、`microphone`（麦克风）、`mock`（模拟设备）。常见设备 ID 前缀：
+
+- Windows 系统音频：`wasapi_loopback_`
+- Windows 麦克风：`wasapi_mic_`
+- macOS 虚拟系统音频：`coreaudio_virtual_`
+- macOS 普通输入：`coreaudio_input_`
+- Linux PulseAudio/PipeWire monitor：`pulse_monitor_`
+- Linux 普通输入：`portaudio_input_`
 
 ### 读取配置
 
@@ -104,7 +115,7 @@ Content-Type: application/json
 
 ```json
 {
-  "inputDeviceId": "loopback_0",
+  "inputDeviceId": "wasapi_loopback_1",
   "sourceLang": "en",
   "targetLang": "zh-CN",
   "displayMode": "bilingual",
@@ -337,6 +348,6 @@ ws://127.0.0.1:8765/ws/subtitles
 |--------|------|
 | `ASR_UNAVAILABLE` | ASR 服务不可用 |
 | `TRANSLATION_FAILED` | 翻译请求失败 |
-| `DEVICE_NOT_FOUND` | 指定的音频设备不存在 |
+| `AUDIO_DEVICE_INVALID` | 指定的音频设备 ID 无法解析或当前平台不可用 |
 | `SESSION_ALREADY_ACTIVE` | 已有活跃会话，无法重复启动 |
 | `NO_SESSION` | 没有活跃会话，无法停止 |

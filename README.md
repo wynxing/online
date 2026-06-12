@@ -38,9 +38,9 @@
 | 前端 UI | React 18 + TypeScript + Vite |
 | 后端 Runtime | Python 3.10+ · FastAPI · uvicorn |
 | AI 服务 | OpenAI 兼容 API（Whisper ASR / Chat Completions 翻译） |
-| 音频采集 | pyaudiowpatch (WASAPI) · sounddevice fallback |
+| 音频采集 | Windows WASAPI (`pyaudiowpatch`) · macOS/Linux PortAudio (`sounddevice`) |
 | 数据存储 | SQLite (aiosqlite) |
-| 打包分发 | PyInstaller (sidecar) · Tauri NSIS/MSI |
+| 打包分发 | PyInstaller sidecar · Tauri NSIS/MSI/DMG/AppImage/DEB |
 | 代码质量 | ESLint · Prettier · Ruff · Vitest · pytest · Husky |
 
 ## 快速开始
@@ -50,7 +50,7 @@
 - Node.js 22+
 - Python 3.10+
 - Rust (stable)
-- Windows 10+（首要支持平台）
+- Windows 10+ / macOS / Linux 桌面环境
 
 ### 安装与运行
 
@@ -136,12 +136,19 @@ npm run release:local
 
 ### CI/CD 发布
 
-推送 `v*` tag 自动触发 GitHub Actions，构建 Windows x64 安装包并上传至 Releases：
+推送 `v*` tag 自动触发 GitHub Actions，构建 Windows x64、macOS x64/arm64、Linux x64 安装包并上传至 Releases：
 
 ```powershell
 git tag v0.2.0
 git push origin v0.2.0
 ```
+
+### 多端音频说明
+
+- Windows：系统音频通过 WASAPI loopback 采集，设备 ID 形如 `wasapi_loopback_1`。
+- macOS：系统音频需要 BlackHole、Loopback、Soundflower 等虚拟音频输入设备，设备 ID 形如 `coreaudio_virtual_0`；普通输入设备为 `coreaudio_input_0`。
+- Linux：优先使用 PulseAudio/PipeWire 的 monitor source，设备 ID 形如 `pulse_monitor_1`；普通输入设备为 `portaudio_input_0`。
+- 如果没有检测到真实设备，Runtime 会返回 mock 设备，应用仍可启动并进入演示模式。
 
 ## 文档
 

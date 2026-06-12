@@ -18,7 +18,7 @@ struct RuntimeProcess {
 const MAX_RESTART_ATTEMPTS: u32 = 3;
 const RESTART_DELAY_MS: u64 = 2000;
 
-/// Upper bound for taskkill to terminate the sidecar tree before we give up.
+/// Upper bound for OS-specific process tree termination before we give up.
 const KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Default for RuntimeProcess {
@@ -148,15 +148,80 @@ fn kill_process_tree(pid: u32) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn kill_process_tree(_pid: u32) -> std::io::Result<()> {
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Instant;
+
+    fn child_pids(pid: u32) -> Vec<u32> {
+        let output = Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+
+        let mut children = Vec::new();
+        if let Ok(output) = output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if let Ok(child_pid) = line.trim().parse::<u32>() {
+                        children.push(child_pid);
+                        children.extend(child_pids(child_pid));
+                    }
+                }
+            }
+        }
+        children
+    }
+
+    fn signal(pid: u32, sig: &str) {
+        let _ = Command::new("kill")
+            .args([sig, &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    fn is_alive(pid: u32) -> bool {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    let mut pids = child_pids(pid);
+    pids.push(pid);
+    pids.dedup();
+
+    for process_id in pids.iter().rev() {
+        signal(*process_id, "-TERM");
+    }
+
+    let started_at = Instant::now();
+    while started_at.elapsed() < KILL_TIMEOUT {
+        if pids.iter().all(|process_id| !is_alive(*process_id)) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    for process_id in pids.iter().rev() {
+        if is_alive(*process_id) {
+            signal(*process_id, "-KILL");
+        }
+    }
     Ok(())
 }
 
 fn stop_runtime_sidecar_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let state = app.state::<RuntimeProcess>();
     // Set shutdown flag FIRST so any Terminated event arriving during
-    // taskkill takes the "no restart" branch and doesn't clear `child`
+    // process-tree termination takes the "no restart" branch and doesn't clear `child`
     // out from under us.
     *state.is_shutting_down.lock().unwrap() = true;
     let child = state.child.lock().unwrap().take();

@@ -19,6 +19,7 @@ a = Analysis(
         "runtime.app.storage",
         "runtime.app.state",
         "runtime.app.devices",
+        "runtime.app.audio_backends",
         "runtime.app.mock_pipeline",
         "runtime.app.real_pipeline",
         "runtime.app.pipeline",
@@ -38,6 +39,8 @@ a = Analysis(
         "runtime.app.provider_rules",
         # third-party dependencies that PyInstaller may miss
         "aiosqlite",
+        "pyaudiowpatch",
+        "sounddevice",
         # uvicorn internals
         "uvicorn.lifespan.on",
         "uvicorn.lifespan.off",
