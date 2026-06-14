@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 
 use base64::Engine;
 use lru::LruCache;
@@ -21,6 +22,27 @@ const WHISPER_HALLUCINATIONS: &[&str] = &[
     "[music]",
     "[applause]",
 ];
+
+// Precompiled static regexes — compiled once instead of per-call.
+static RE_THINK_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)\x{3c}think\x{3e}.*?\x{3c}/think\x{3e}").unwrap());
+static RE_CODE_FENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*```(?:\w+)?\s*|\s*```\s*$").unwrap());
+static RE_ROLE_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:assistant|user|system|translation|answer)\s*[:\u{ff1a}]\s*").unwrap()
+});
+static RE_PROMPT_ECHO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\s*(?:previous\s+context|context)\s*:").unwrap());
+static RE_HTML_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").unwrap());
+static RE_LEADING_THINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\s*think>\s*").unwrap());
+static RE_LEADING_THINK_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*think\s+").unwrap());
+static RE_NUMERIC_NOISE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*[\d\W_]+p?\.?\s*$").unwrap());
+static RE_SHORT_MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z]$").unwrap());
+static RE_LATIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z]").unwrap());
+static RE_CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u{4e00}-\u{9fff}]").unwrap());
 
 #[derive(Clone)]
 pub struct AsrClient {
@@ -324,16 +346,11 @@ fn bounded_context_payload(
 }
 
 fn clean_translation_text(text: &str) -> String {
-    let think_block = Regex::new(r"(?is)<think>.*?</think>").unwrap();
-    let fence = Regex::new(r"(?m)^\s*```(?:\w+)?\s*|\s*```\s*$").unwrap();
-    let role_prefix =
-        Regex::new(r"(?i)^\s*(?:assistant|user|system|translation|answer)\s*[:\u{ff1a}]\s*")
-            .unwrap();
-    let mut value = think_block.replace_all(text, " ").to_string();
-    value = fence.replace_all(&value, "").to_string();
+    let mut value = RE_THINK_BLOCK.replace_all(text, " ").to_string();
+    value = RE_CODE_FENCE.replace_all(&value, "").to_string();
     value = value.replace("```", " ");
     for _ in 0..3 {
-        let stripped = role_prefix.replace(&value, "").to_string();
+        let stripped = RE_ROLE_PREFIX.replace(&value, "").to_string();
         if stripped == value {
             break;
         }
@@ -374,25 +391,17 @@ fn sanitize_asr_text(raw_text: &str, source_lang: &str) -> SanitizedAsrText {
         return rejected("empty");
     }
 
-    let prompt_echo = Regex::new(r"(?i)^\s*(previous\s+context|context)\s*:").unwrap();
-    if prompt_echo.is_match(&text) {
+    if RE_PROMPT_ECHO.is_match(&text) {
         return rejected("prompt_echo");
     }
 
-    let think_block = Regex::new(r"(?is)<think>.*?</think>").unwrap();
-    let tag = Regex::new(r"(?is)<[^>]+>").unwrap();
-    let leading_think = Regex::new(r"(?i)^\s*think>\s*").unwrap();
-    let leading_think_word = Regex::new(r"^\s*think\s+").unwrap();
-    let role_prefix =
-        Regex::new(r"(?i)^\s*(?:assistant|user|system|translation|answer)\s*[:\u{ff1a}]\s*")
-            .unwrap();
-    text = think_block.replace_all(&text, " ").to_string();
+    text = RE_THINK_BLOCK.replace_all(&text, " ").to_string();
     text = text.replace("```", " ");
-    text = tag.replace_all(&text, " ").to_string();
-    text = leading_think.replace(&text, "").to_string();
-    text = leading_think_word.replace(&text, "").to_string();
+    text = RE_HTML_TAG.replace_all(&text, " ").to_string();
+    text = RE_LEADING_THINK.replace(&text, "").to_string();
+    text = RE_LEADING_THINK_WORD.replace(&text, "").to_string();
     for _ in 0..3 {
-        let stripped = role_prefix.replace(&text, "").to_string();
+        let stripped = RE_ROLE_PREFIX.replace(&text, "").to_string();
         if stripped == text {
             break;
         }
@@ -408,13 +417,11 @@ fn sanitize_asr_text(raw_text: &str, source_lang: &str) -> SanitizedAsrText {
     if text.is_empty() {
         return rejected("empty_after_cleanup");
     }
-    if prompt_echo.is_match(&text) {
+    if RE_PROMPT_ECHO.is_match(&text) {
         return rejected("prompt_echo");
     }
-    let numeric_noise = Regex::new(r"^\s*[\d\W_]+p?\.?\s*$").unwrap();
-    let short_marker = Regex::new(r"^[a-zA-Z]$").unwrap();
-    if numeric_noise.is_match(&text)
-        || short_marker.is_match(&text)
+    if RE_NUMERIC_NOISE.is_match(&text)
+        || RE_SHORT_MARKER.is_match(&text)
         || !text.chars().any(char::is_alphabetic)
     {
         return rejected("numeric_or_symbol_noise");
@@ -424,11 +431,8 @@ fn sanitize_asr_text(raw_text: &str, source_lang: &str) -> SanitizedAsrText {
     if WHISPER_HALLUCINATIONS.contains(&normalized) {
         return rejected("whisper_hallucination");
     }
-    let latin_count = Regex::new(r"[A-Za-z]").unwrap().find_iter(&text).count();
-    let cjk_count = Regex::new(r"[\u{4e00}-\u{9fff}]")
-        .unwrap()
-        .find_iter(&text)
-        .count();
+    let latin_count = RE_LATIN.find_iter(&text).count();
+    let cjk_count = RE_CJK.find_iter(&text).count();
     if source_lang.to_lowercase().starts_with("en") && cjk_count > 0 && latin_count == 0 {
         return rejected("target_language_output");
     }

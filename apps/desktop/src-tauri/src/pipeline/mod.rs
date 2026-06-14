@@ -18,6 +18,16 @@ use crate::{
     storage::Storage,
 };
 
+/// Minimum IPC metrics emit interval. Without throttling, metrics are
+/// emitted every audio frame (~100×/s at 48 kHz/10 ms), far exceeding
+/// what the UI can consume.
+const METRICS_THROTTLE_MS: u64 = 300;
+
+/// RMS threshold below which an audio segment is considered silence.
+/// At 90.0, this corresponds to roughly 0.27% of i16 full-scale amplitude
+/// (32768 × 0.0027 ≈ 90), filtering out ambient noise floor.
+const SILENCE_RMS_THRESHOLD: f32 = 90.0;
+
 #[derive(Clone)]
 pub struct PipelineManager {
     inner: Arc<Mutex<Option<ActivePipeline>>>,
@@ -248,6 +258,7 @@ async fn segmenter_task(
     let mut segment_start = 0.0f32;
     let mut frames = 0u64;
     let mut low_energy_drops = 0u64;
+    let mut last_metrics_emit = Instant::now();
 
     loop {
         tokio::select! {
@@ -267,36 +278,41 @@ async fn segmenter_task(
                 stream_time += frame.samples.len() as f32 / (sample_rate as f32 * channels as f32);
                 buffer.extend(frame.samples);
                 let frame_rms = rms(&buffer);
-                emit_metrics(&app, PipelineMetricsPayload {
-                    session_id: Some(session_id.clone()),
-                    segment_id: None,
-                    stage: "audio".into(),
-                    status: "stats".into(),
-                    updated_at: Some(now_iso()),
-                    drop_reason: None,
-                    dropped_count: None,
-                    worker_id: None,
-                    audio_start: None,
-                    audio_end: None,
-                    audio_duration_ms: None,
-                    asr_duration_ms: None,
-                    translation_duration_ms: None,
-                    end_to_end_ms: None,
-                    queue_lag_ms: None,
-                    segment_queue_size: None,
-                    translation_queue_size: None,
-                    frames: Some(frames),
-                    segments: Some(index),
-                    low_energy_drops: Some(low_energy_drops),
-                    last_frame_rms: Some(frame_rms),
-                    max_frame_rms: Some(frame_rms),
-                    last_segment_rms: None,
-                    max_segment_rms: None,
-                    error: None,
-                });
+
+                // Throttle metrics to avoid flooding the IPC channel.
+                if last_metrics_emit.elapsed().as_millis() >= METRICS_THROTTLE_MS as u128 {
+                    last_metrics_emit = Instant::now();
+                    emit_metrics(&app, PipelineMetricsPayload {
+                        session_id: Some(session_id.clone()),
+                        segment_id: None,
+                        stage: "audio".into(),
+                        status: "stats".into(),
+                        updated_at: Some(now_iso()),
+                        drop_reason: None,
+                        dropped_count: None,
+                        worker_id: None,
+                        audio_start: None,
+                        audio_end: None,
+                        audio_duration_ms: None,
+                        asr_duration_ms: None,
+                        translation_duration_ms: None,
+                        end_to_end_ms: None,
+                        queue_lag_ms: None,
+                        segment_queue_size: None,
+                        translation_queue_size: None,
+                        frames: Some(frames),
+                        segments: Some(index),
+                        low_energy_drops: Some(low_energy_drops),
+                        last_frame_rms: Some(frame_rms),
+                        max_frame_rms: Some(frame_rms),
+                        last_segment_rms: None,
+                        max_segment_rms: None,
+                        error: None,
+                    });
+                }
                 if buffer.len() >= max_samples && buffer.len() >= min_samples {
-                    let segment_rms = rms(&buffer);
-                    if segment_rms < 90.0 {
+                    // Reuse frame_rms for silence gate instead of recomputing.
+                    if frame_rms < SILENCE_RMS_THRESHOLD {
                         buffer.clear();
                         segment_start = stream_time;
                         low_energy_drops += 1;
