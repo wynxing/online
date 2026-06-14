@@ -1,16 +1,13 @@
 import { Activity, BookOpen, ExternalLink, History, Settings, Wifi, WifiOff } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   createGlossaryTerm,
   deleteGlossaryTerm,
   getConfig,
   getDevices,
   getGlossary,
-  getRuntimeStatus,
   getSessionSegments,
   getSessions,
-  health,
-  restartRuntime,
   saveConfig,
   startSession,
   stopSession,
@@ -18,16 +15,16 @@ import {
   testTranslation,
   updateGlossaryTerm,
 } from "./api";
-import { useSubtitleSocket } from "./hooks/useSubtitleSocket";
-import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { ControlPanel } from "./components/ControlPanel";
-import { SubtitlePanel } from "./components/SubtitlePanel";
-import { SettingsPanel } from "./components/SettingsPanel";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { GlossaryPanel } from "./components/GlossaryPanel";
 import { FloatingSubtitles } from "./components/FloatingSubtitles";
+import { GlossaryPanel } from "./components/GlossaryPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { SubtitlePanel } from "./components/SubtitlePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { NavButton } from "./components/common/NavButton";
+import { useSubtitleSocket } from "./hooks/useSubtitleSocket";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import type {
   Device,
   GlossaryTerm,
@@ -41,9 +38,9 @@ const defaultConfig: RuntimeConfig = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   translationModel: "gpt-4o-mini",
-  asrProvider: "mock",
+  asrProvider: "openai-compatible",
   translationProvider: "openai-compatible",
-  defaultInputDeviceId: "system_loopback",
+  defaultInputDeviceId: "",
   displayMode: "bilingual",
   fontSize: 24,
   glossaryEnabled: true,
@@ -51,6 +48,8 @@ const defaultConfig: RuntimeConfig = {
   asrApiKey: "",
   asrModel: "whisper-1",
   asrLanguage: "en",
+  sourceLang: "en",
+  targetLang: "zh-CN",
   asrFormat: "whisper",
   asrConcurrency: 2,
   translationConcurrency: 3,
@@ -64,18 +63,12 @@ function normalizeConfig(config: RuntimeConfig): RuntimeConfig {
   return { ...defaultConfig, ...config };
 }
 
-function preferLoopbackConfig(config: RuntimeConfig, devices: Device[]): RuntimeConfig {
-  if (config.asrProvider === "mock") {
-    return config;
-  }
+function preferAvailableDevice(config: RuntimeConfig, devices: Device[]): RuntimeConfig {
   const selected = devices.find((device) => device.id === config.defaultInputDeviceId);
-  if (selected?.kind === "system") {
-    return config;
-  }
-  const loopback = devices.find(
-    (device) => device.kind === "system" && device.id.startsWith("wasapi_loopback_")
-  );
-  return loopback ? { ...config, defaultInputDeviceId: loopback.id } : config;
+  if (selected) return config;
+  const systemDevice = devices.find((device) => device.kind === "system");
+  const fallback = systemDevice ?? devices[0];
+  return fallback ? { ...config, defaultInputDeviceId: fallback.id } : config;
 }
 
 function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[] {
@@ -100,14 +93,14 @@ function MainConsole() {
   const [historySegments, setHistorySegments] = useState<SubtitleSegment[]>([]);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
-  const [notice, setNotice] = useState("Runtime 未检测");
-  const [restarting, setRestarting] = useState(false);
+  const [notice, setNotice] = useState("Runtime initializing");
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     kind: string;
     ok: boolean;
     message: string;
   } | null>(null);
+
   const {
     segments,
     setSegments,
@@ -118,7 +111,6 @@ function MainConsole() {
     setErrorLog,
     diagnostics,
     setDiagnostics,
-    reconnectAttempt,
   } = useSubtitleSocket();
 
   const {
@@ -131,147 +123,66 @@ function MainConsole() {
   } = useUpdateChecker();
 
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
-  const sourceDevice = devices.find((device) => device.id === config.defaultInputDeviceId);
   const isRunning = sessionStatus === "running";
-
-  const bootstrapId = useRef(0);
 
   useEffect(() => {
     void bootstrap();
   }, []);
 
-  // 同步字号到 localStorage，供浮窗读取
   useEffect(() => {
     window.localStorage.setItem("fontSize", String(config.fontSize));
   }, [config.fontSize]);
 
-  // 设备列表轮询：Runtime 已连接后每 5 秒刷新一次
   useEffect(() => {
-    if (notice !== "Runtime 已连接") return;
     const timer = window.setInterval(() => {
       void getDevices()
-        .then(setDevices)
-        .catch(() => {});
+        .then((runtimeDevices) => {
+          setDevices(runtimeDevices);
+          setConfig((current) => preferAvailableDevice(current, runtimeDevices));
+        })
+        .catch(() => undefined);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [notice]);
+  }, []);
 
-  async function bootstrap(retries = 15, delayMs = 1000) {
-    const id = ++bootstrapId.current;
-
-    // 步骤 1：先尝试健康检查（快速检测 Runtime 是否已存在）
+  async function bootstrap() {
     try {
-      await health();
-      if (id !== bootstrapId.current) return;
-
-      // Runtime 已在运行，直接连接
       const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all([
         getConfig(),
         getDevices(),
         getGlossary(),
         getSessions(),
       ]);
-      if (id !== bootstrapId.current) return;
-
-      setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
+      setConfig(preferAvailableDevice(normalizeConfig(runtimeConfig), runtimeDevices));
       setDevices(runtimeDevices);
       setGlossary(runtimeGlossary);
       setSessions(runtimeSessions);
-      setNotice("Runtime 已连接");
-      return;
-    } catch {
-      // 健康检查失败，继续步骤 2
-    }
-
-    // 步骤 2：检查 sidecar 进程状态
-    try {
-      const status = await getRuntimeStatus();
-      if (id !== bootstrapId.current) return;
-
-      if (status.alive) {
-        // 进程在运行但健康检查失败，等待并重试
-        setNotice("Runtime 进程运行中，等待服务就绪...");
-      } else if (status.error) {
-        // sidecar 启动失败，有明确错误信息（如二进制文件缺失）
-        setNotice(`Runtime 启动失败：${status.error}`);
-        return;
-      } else {
-        // sidecar 进程不在运行，尝试启动
-        setNotice("Runtime 进程未运行，正在启动...");
-        await restartRuntime();
-        if (id !== bootstrapId.current) return;
-      }
-    } catch {
-      // invoke 失败（如在 dev 模式），跳过 sidecar 检查
-    }
-
-    // 步骤 3：轮询健康检查（等待 sidecar 就绪）
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      if (id !== bootstrapId.current) return;
-      try {
-        await health();
-        if (id !== bootstrapId.current) return;
-
-        // 健康检查成功，加载配置和数据
-        const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all(
-          [getConfig(), getDevices(), getGlossary(), getSessions()]
-        );
-        if (id !== bootstrapId.current) return;
-
-        setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
-        setDevices(runtimeDevices);
-        setGlossary(runtimeGlossary);
-        setSessions(runtimeSessions);
-        setNotice("Runtime 已连接");
-        return;
-      } catch (error: unknown) {
-        if (id !== bootstrapId.current) return;
-        if (attempt < retries) {
-          setNotice(`Runtime 启动中... (${attempt}/${retries})`);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue;
-        }
-        const message =
-          error instanceof TypeError
-            ? "Runtime 无响应，请检查端口 8765 或重启应用"
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        setNotice(`Runtime 未就绪：${message}`);
-      }
-    }
-  }
-
-  async function handleRestartRuntime() {
-    setRestarting(true);
-    try {
-      await restartRuntime();
-      await bootstrap();
-    } finally {
-      setRestarting(false);
+      setNotice("Runtime ready");
+    } catch (error) {
+      setNotice(
+        `Runtime initialization failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
   async function handleStart() {
-    if (config.asrProvider !== "mock") {
-      const errors: string[] = [];
-      const asrKey = config.asrApiKey || config.apiKey;
-      const asrUrl = config.asrBaseUrl || config.baseUrl;
-      if (!asrUrl) errors.push("ASR 服务地址未配置");
-      if (!asrKey) errors.push("ASR API Key 未配置");
-      if (!config.apiKey) errors.push("翻译 API Key 未配置");
-      if (sourceDevice?.kind === "mock") errors.push("请选择真实的音频输入设备");
-      if (errors.length > 0) {
-        setNotice(`无法启动：${errors.join("；")}`);
-        return;
-      }
+    const errors: string[] = [];
+    const asrKey = config.asrApiKey || config.apiKey;
+    const asrUrl = config.asrBaseUrl || config.baseUrl;
+    if (!asrUrl) errors.push("ASR Base URL is required");
+    if (!asrKey) errors.push("ASR API Key is required");
+    if (!config.apiKey) errors.push("Translation API Key is required");
+    if (!config.defaultInputDeviceId) errors.push("Select an audio input device");
+    if (errors.length > 0) {
+      setNotice(`Cannot start: ${errors.join("; ")}`);
+      return;
     }
 
     try {
       const record = await startSession({
         inputDeviceId: config.defaultInputDeviceId,
-        sourceLang: "en",
-        targetLang: "zh-CN",
+        sourceLang: config.sourceLang,
+        targetLang: config.targetLang,
         displayMode: config.displayMode,
         asrProvider: config.asrProvider,
         translationProvider: config.translationProvider,
@@ -280,15 +191,9 @@ function MainConsole() {
       setErrorLog([]);
       setDiagnostics({ droppedCount: 0, lowEnergyDrops: 0 });
       setActiveSession(record);
-      setNotice("同传会话已启动");
-    } catch (err: unknown) {
-      const message =
-        err instanceof TypeError
-          ? "Runtime 无响应，请检查端口 8765 或重启应用"
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      setNotice(`启动失败：${message}`);
+      setNotice("Session started");
+    } catch (error) {
+      setNotice(`Start failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -298,13 +203,13 @@ function MainConsole() {
       setActiveSession(result);
     }
     setSessions(await getSessions());
-    setNotice("同传会话已停止并保存");
+    setNotice("Session stopped and saved");
   }
 
   async function handleSaveConfig() {
     const saved = await saveConfig(config);
     setConfig(normalizeConfig(saved));
-    setNotice("配置已保存");
+    setNotice("Configuration saved");
   }
 
   async function openFloatingWindow() {
@@ -319,7 +224,7 @@ function MainConsole() {
       }
       new WebviewWindow("floating-subtitles", {
         url: "/?view=floating",
-        title: "AI 同传字幕",
+        title: "AI Subtitles",
         width: 960,
         height: 260,
         minWidth: 520,
@@ -341,9 +246,7 @@ function MainConsole() {
 
   async function addGlossaryTerm(event: FormEvent) {
     event.preventDefault();
-    if (!newTerm.source.trim() || !newTerm.target.trim()) {
-      return;
-    }
+    if (!newTerm.source.trim() || !newTerm.target.trim()) return;
     const created = await createGlossaryTerm({
       source: newTerm.source.trim(),
       target: newTerm.target.trim(),
@@ -371,12 +274,12 @@ function MainConsole() {
     setTestResult(null);
     try {
       const res = await testAsr(config);
-      setTestResult({ kind: "asr", ok: true, message: `连接正常：${res.base_url}` });
-    } catch (err) {
+      setTestResult({ kind: "asr", ok: true, message: `Connected: ${res.base_url}` });
+    } catch (error) {
       setTestResult({
         kind: "asr",
         ok: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: error instanceof Error ? error.message : String(error),
       });
     } finally {
       setTesting(null);
@@ -391,13 +294,13 @@ function MainConsole() {
       setTestResult({
         kind: "translation",
         ok: true,
-        message: `连接正常，示例翻译：${res.sample}`,
+        message: `Connected. Sample: ${res.sample}`,
       });
-    } catch (err) {
+    } catch (error) {
       setTestResult({
         kind: "translation",
         ok: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: error instanceof Error ? error.message : String(error),
       });
     } finally {
       setTesting(null);
@@ -405,10 +308,10 @@ function MainConsole() {
   }
 
   const tabTitle: Record<Tab, string> = {
-    console: "实时同传控制台",
-    settings: "运行时与 AI 设置",
-    history: "会话历史",
-    glossary: "术语表管理",
+    console: "Live interpretation",
+    settings: "Runtime and AI settings",
+    history: "Session history",
+    glossary: "Glossary",
   };
 
   return (
@@ -417,66 +320,43 @@ function MainConsole() {
         <div className="brand">
           <span className="brand-mark">AI</span>
           <div>
-            <strong>同声传译助手</strong>
-            <span>实时双语字幕工作台</span>
+            <strong>Interpretation Assistant</strong>
+            <span>Real-time bilingual subtitles</span>
           </div>
         </div>
         <nav className="nav-list">
           <NavButton
             active={tab === "console"}
             icon={<Activity />}
-            label="控制台"
+            label="Console"
             onClick={() => setTab("console")}
           />
           <NavButton
             active={tab === "settings"}
             icon={<Settings />}
-            label="设置"
+            label="Settings"
             onClick={() => setTab("settings")}
           />
           <NavButton
             active={tab === "history"}
             icon={<History />}
-            label="历史"
+            label="History"
             onClick={() => setTab("history")}
           />
           <NavButton
             active={tab === "glossary"}
             icon={<BookOpen />}
-            label="术语表"
+            label="Glossary"
             onClick={() => setTab("glossary")}
           />
         </nav>
         <div className="runtime-card">
           <span
-            className={`status-dot ${socketStatus === "connected" && notice === "Runtime 已连接" ? "connected" : socketStatus}`}
+            className={`status-dot ${socketStatus === "connected" ? "connected" : socketStatus}`}
           />
           <div>
-            <strong>
-              {notice === "Runtime 已连接"
-                ? "Runtime 在线"
-                : notice.startsWith("Runtime 启动中")
-                  ? "Runtime 启动中"
-                  : notice.includes("启动失败") || notice.includes("未就绪")
-                    ? "Runtime 离线"
-                    : socketStatus === "connected"
-                      ? "WebSocket 在线"
-                      : "WebSocket 离线"}
-            </strong>
-            <span>
-              {socketStatus === "disconnected" && reconnectAttempt > 0
-                ? `WebSocket 重连中 (${reconnectAttempt}/10)`
-                : notice}
-            </span>
-            {(notice.includes("启动失败") || notice.includes("未就绪")) && (
-              <button
-                className="restart-btn"
-                onClick={() => void handleRestartRuntime()}
-                disabled={restarting}
-              >
-                {restarting ? "重启中..." : "重新启动"}
-              </button>
-            )}
+            <strong>{socketStatus === "connected" ? "Runtime online" : "Runtime offline"}</strong>
+            <span>{notice}</span>
           </div>
         </div>
       </aside>
@@ -499,13 +379,13 @@ function MainConsole() {
             <button
               className="icon-button"
               onClick={() => void bootstrap()}
-              title="刷新 Runtime 状态"
+              title="Refresh runtime"
             >
               {socketStatus === "connected" ? <Wifi /> : <WifiOff />}
             </button>
             <button className="secondary-button" onClick={() => void openFloatingWindow()}>
               <ExternalLink />
-              悬浮字幕
+              Floating subtitles
             </button>
           </div>
         </header>
@@ -535,7 +415,7 @@ function MainConsole() {
               fontSize={config.fontSize}
             />
             <div className="latest-panel">
-              <span className="eyebrow">Latest Stable</span>
+              <span className="eyebrow">Latest stable</span>
               {visibleSegments.length > 0 ? (
                 (() => {
                   const latest =
@@ -559,7 +439,7 @@ function MainConsole() {
                   );
                 })()
               ) : (
-                <p className="latest-placeholder">暂无稳定字幕。</p>
+                <p className="latest-placeholder">No stable subtitles yet.</p>
               )}
             </div>
           </section>
@@ -591,7 +471,7 @@ function MainConsole() {
             glossary={glossary}
             newTerm={newTerm}
             setNewTerm={setNewTerm}
-            onAdd={(e) => void addGlossaryTerm(e)}
+            onAdd={(event) => void addGlossaryTerm(event)}
             onToggle={(term) => void toggleGlossary(term)}
             onRemove={(id) => void removeGlossaryTerm(id)}
           />

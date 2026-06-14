@@ -30,52 +30,52 @@ export function SettingsPanel({
         <div className="panel-heading">
           <div>
             <span className="eyebrow">ASR</span>
-            <h2>语音识别服务</h2>
+            <h2>Speech recognition</h2>
           </div>
           <SlidersHorizontal />
         </div>
         <label className="field">
-          <span>接口格式</span>
+          <span>API format</span>
           <select
             value={config.asrFormat}
             onChange={(event) => setConfig({ ...config, asrFormat: event.target.value })}
           >
-            <option value="whisper">标准 ASR（/v1/audio/transcriptions）</option>
-            <option value="chat-completions">Chat Completions（/v1/chat/completions）</option>
+            <option value="whisper">Standard ASR (/v1/audio/transcriptions)</option>
+            <option value="chat-completions">Chat Completions (/v1/chat/completions)</option>
           </select>
         </label>
         <div className="device-note">
           {config.asrFormat === "whisper"
-            ? "标准 ASR 格式：音频以文件方式上传，适用于兼容 Whisper API 的服务。"
-            : "Chat Completions 格式：音频以 base64 编码发送，适用于兼容的 Chat Completions 服务。"}
+            ? "Uploads audio as a file to a Whisper-compatible transcription endpoint."
+            : "Sends base64 audio to a Chat Completions-compatible endpoint."}
         </div>
         <label className="field">
-          <span>ASR 服务地址</span>
+          <span>ASR Base URL</span>
           <input
             value={config.asrBaseUrl}
-            placeholder="留空则使用翻译服务地址"
+            placeholder="Leave blank to use translation Base URL"
             onChange={(event) => setConfig({ ...config, asrBaseUrl: event.target.value })}
           />
         </label>
-        <div className="device-note">地址通常需要包含 /v1 后缀</div>
+        <div className="device-note">The URL usually includes a /v1 suffix.</div>
         <label className="field">
           <span>ASR API Key</span>
           <input
             type="password"
             value={config.asrApiKey}
-            placeholder="留空则使用翻译服务 Key"
+            placeholder="Leave blank to use translation API Key"
             onChange={(event) => setConfig({ ...config, asrApiKey: event.target.value })}
           />
         </label>
         <label className="field">
-          <span>ASR 模型</span>
+          <span>ASR model</span>
           <input
             value={config.asrModel}
             onChange={(event) => setConfig({ ...config, asrModel: event.target.value })}
           />
         </label>
         <label className="field">
-          <span>识别语言</span>
+          <span>Recognition language</span>
           <input
             value={config.asrLanguage}
             placeholder="en / zh / auto"
@@ -83,80 +83,84 @@ export function SettingsPanel({
           />
         </label>
         <button className="secondary-button" disabled={testing !== null} onClick={onTestAsr}>
-          {testing === "asr" ? "测试中..." : "测试 ASR 连接"}
+          {testing === "asr" ? "Testing..." : "Test ASR connection"}
         </button>
         {testResult?.kind === "asr" && (
           <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
-            {testResult.ok ? "✓" : "✗"} {testResult.message}
+            {testResult.ok ? "OK" : "Failed"}: {testResult.message}
           </div>
         )}
 
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
             <span className="eyebrow">Translation</span>
-            <h2>翻译服务</h2>
+            <h2>Translation service</h2>
           </div>
           <SlidersHorizontal />
         </div>
         <label className="field">
           <span>Base URL</span>
-          <input value={config.baseUrl} onChange={(event) => setConfig({ ...config, baseUrl: event.target.value })} />
+          <input
+            value={config.baseUrl}
+            onChange={(event) => setConfig({ ...config, baseUrl: event.target.value })}
+          />
         </label>
         <label className="field">
           <span>API Key</span>
           <input
             type="password"
             value={config.apiKey}
-            placeholder="演示版可留空"
             onChange={(event) => setConfig({ ...config, apiKey: event.target.value })}
           />
         </label>
         <label className="field">
-          <span>翻译模型</span>
+          <span>Translation model</span>
           <input
             value={config.translationModel}
             onChange={(event) => setConfig({ ...config, translationModel: event.target.value })}
           />
         </label>
-        <button className="secondary-button" disabled={testing !== null} onClick={onTestTranslation}>
-          {testing === "translation" ? "测试中..." : "测试翻译连接"}
+        <div className="settings-columns">
+          <label className="field">
+            <span>Source language</span>
+            <input
+              value={config.sourceLang}
+              placeholder="en"
+              onChange={(event) => setConfig({ ...config, sourceLang: event.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>Target language</span>
+            <input
+              value={config.targetLang}
+              placeholder="zh-CN"
+              onChange={(event) => setConfig({ ...config, targetLang: event.target.value })}
+            />
+          </label>
+        </div>
+        <button
+          className="secondary-button"
+          disabled={testing !== null}
+          onClick={onTestTranslation}
+        >
+          {testing === "translation" ? "Testing..." : "Test translation connection"}
         </button>
         {testResult?.kind === "translation" && (
           <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
-            {testResult.ok ? "✓" : "✗"} {testResult.message}
+            {testResult.ok ? "OK" : "Failed"}: {testResult.message}
           </div>
         )}
 
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
             <span className="eyebrow">Performance</span>
-            <h2>实时管线</h2>
+            <h2>Realtime pipeline</h2>
           </div>
           <SlidersHorizontal />
         </div>
         <div className="settings-columns">
           <label className="field">
-            <span>ASR 并发</span>
-            <input
-              type="number"
-              min="1"
-              max="8"
-              value={config.asrConcurrency}
-              onChange={(event) => updateConfigNumber("asrConcurrency", event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>翻译并发</span>
-            <input
-              type="number"
-              min="1"
-              max="8"
-              value={config.translationConcurrency}
-              onChange={(event) => updateConfigNumber("translationConcurrency", event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>最短分段秒数</span>
+            <span>Min segment seconds</span>
             <input
               type="number"
               min="0.4"
@@ -167,7 +171,7 @@ export function SettingsPanel({
             />
           </label>
           <label className="field">
-            <span>最长分段秒数</span>
+            <span>Max segment seconds</span>
             <input
               type="number"
               min="0.8"
@@ -178,7 +182,7 @@ export function SettingsPanel({
             />
           </label>
           <label className="field">
-            <span>静音切分秒数</span>
+            <span>Silence split seconds</span>
             <input
               type="number"
               min="0.1"
@@ -193,11 +197,11 @@ export function SettingsPanel({
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
             <span className="eyebrow">Display</span>
-            <h2>显示设置</h2>
+            <h2>Subtitle display</h2>
           </div>
         </div>
         <label className="field">
-          <span>字幕字号</span>
+          <span>Subtitle font size</span>
           <input
             type="range"
             min="14"
@@ -212,7 +216,7 @@ export function SettingsPanel({
             checked={config.glossaryEnabled}
             onChange={(event) => setConfig({ ...config, glossaryEnabled: event.target.checked })}
           />
-          <span>翻译时注入启用术语表</span>
+          <span>Use glossary during translation</span>
         </label>
         <label className="toggle-row">
           <input
@@ -220,18 +224,18 @@ export function SettingsPanel({
             checked={config.diagnosticsEnabled}
             onChange={(event) => setConfig({ ...config, diagnosticsEnabled: event.target.checked })}
           />
-          <span>显示实时诊断指标</span>
+          <span>Show realtime diagnostics</span>
         </label>
         <button className="primary-button" onClick={onSave}>
           <Save />
-          保存配置
+          Save configuration
         </button>
       </div>
       <div className="preview-panel">
         <span className="eyebrow">Subtitle Preview</span>
         <div className="subtitle-preview" style={{ fontSize: config.fontSize }}>
           <span>We use caching to reduce latency.</span>
-          <strong>我们使用缓存来降低延迟。</strong>
+          <strong>Translation preview text</strong>
         </div>
       </div>
     </section>

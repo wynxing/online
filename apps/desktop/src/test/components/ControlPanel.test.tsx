@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ControlPanel } from "../../components/ControlPanel";
 import type { Device, RuntimeConfig } from "../../types";
 
@@ -7,7 +7,7 @@ const defaultConfig: RuntimeConfig = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   translationModel: "gpt-4o-mini",
-  asrProvider: "mock",
+  asrProvider: "openai-compatible",
   translationProvider: "openai-compatible",
   defaultInputDeviceId: "dev_1",
   displayMode: "bilingual",
@@ -17,6 +17,8 @@ const defaultConfig: RuntimeConfig = {
   asrApiKey: "",
   asrModel: "whisper-1",
   asrLanguage: "en",
+  sourceLang: "en",
+  targetLang: "zh-CN",
   asrFormat: "whisper",
   asrConcurrency: 2,
   translationConcurrency: 3,
@@ -27,7 +29,15 @@ const defaultConfig: RuntimeConfig = {
 };
 
 const mockDevices: Device[] = [
-  { id: "dev_1", name: "System Loopback", kind: "system", isDefault: true, available: true },
+  {
+    id: "dev_1",
+    name: "Speakers (Realtek(R) Audio)",
+    displayName: "System audio - Speakers (Realtek(R) Audio) (Default)",
+    kind: "system",
+    isDefault: true,
+    available: true,
+    description: "Windows WASAPI loopback for system audio capture.",
+  },
   { id: "dev_2", name: "Microphone", kind: "microphone", isDefault: false, available: true },
 ];
 
@@ -48,65 +58,69 @@ function renderControlPanel(overrides = {}) {
 describe("ControlPanel", () => {
   it("renders audio source heading", () => {
     renderControlPanel();
-    expect(screen.getByText("音频来源")).toBeInTheDocument();
+    expect(screen.getByText("Audio source")).toBeInTheDocument();
   });
 
   it("renders device options", () => {
     renderControlPanel();
-    expect(screen.getByText("System Loopback")).toBeInTheDocument();
+    expect(
+      screen.getByText("System audio - Speakers (Realtek(R) Audio) (Default)")
+    ).toBeInTheDocument();
     expect(screen.getByText("Microphone")).toBeInTheDocument();
+  });
+
+  it("uses displayName for device options and falls back to name", () => {
+    renderControlPanel();
+    const options = screen.getAllByRole("option");
+    expect(options[0]).toHaveTextContent("System audio - Speakers (Realtek(R) Audio) (Default)");
+    expect(options[1]).toHaveTextContent("Microphone");
   });
 
   it("calls onStart when start button is clicked", () => {
     const { props } = renderControlPanel();
-    fireEvent.click(screen.getByText("开始同传"));
+    fireEvent.click(screen.getByText("Start"));
     expect(props.onStart).toHaveBeenCalledTimes(1);
   });
 
   it("calls onStop when stop button is clicked", () => {
     const { props } = renderControlPanel({ isRunning: true });
-    fireEvent.click(screen.getByText("停止"));
+    fireEvent.click(screen.getByText("Stop"));
     expect(props.onStop).toHaveBeenCalledTimes(1);
   });
 
   it("disables start button when running", () => {
     renderControlPanel({ isRunning: true });
-    expect(screen.getByText("开始同传")).toBeDisabled();
+    expect(screen.getByText("Start")).toBeDisabled();
   });
 
   it("disables stop button when not running", () => {
     renderControlPanel({ isRunning: false });
-    expect(screen.getByText("停止")).toBeDisabled();
+    expect(screen.getByText("Stop")).toBeDisabled();
   });
 
   it("calls onClear when clear button is clicked", () => {
     const { props } = renderControlPanel();
-    fireEvent.click(screen.getByText("清空当前字幕"));
+    fireEvent.click(screen.getByText("Clear subtitles"));
     expect(props.onClear).toHaveBeenCalledTimes(1);
   });
 
-  it("shows loopback hint for system device", () => {
+  it("shows the selected device note", () => {
     renderControlPanel();
-    expect(screen.getByText(/已选择系统音频 loopback/)).toBeInTheDocument();
-  });
-
-  it("shows mic hint for microphone device", () => {
-    renderControlPanel({
-      config: { ...defaultConfig, defaultInputDeviceId: "dev_2" },
-    });
-    expect(screen.getByText(/当前选择的是麦克风/)).toBeInTheDocument();
+    expect(screen.getByText(/Windows WASAPI loopback/)).toBeInTheDocument();
+    expect(screen.getByText(/Default device/)).toBeInTheDocument();
+    expect(screen.getByText(/Device id: dev_1/)).toBeInTheDocument();
   });
 
   it("renders display mode buttons", () => {
     renderControlPanel();
-    expect(screen.getByText("原文")).toBeInTheDocument();
-    expect(screen.getByText("译文")).toBeInTheDocument();
-    expect(screen.getByText("双语")).toBeInTheDocument();
+    expect(screen.getByText("Source")).toBeInTheDocument();
+    expect(screen.getByText("Translation")).toBeInTheDocument();
+    expect(screen.getByText("Bilingual")).toBeInTheDocument();
   });
 
   it("calls setConfig when display mode is changed", () => {
     const { props } = renderControlPanel();
-    fireEvent.click(screen.getByText("原文"));
+    fireEvent.click(screen.getByText("Source"));
     expect(props.setConfig).toHaveBeenCalledWith(
       expect.objectContaining({ displayMode: "source" })
     );

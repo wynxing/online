@@ -5,8 +5,6 @@ import { useUpdateChecker } from "../../hooks/useUpdateChecker";
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
   relaunch: vi.fn(),
-  restartRuntime: vi.fn(),
-  stopRuntime: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-updater", () => ({
@@ -15,11 +13,6 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 
 vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: mocks.relaunch,
-}));
-
-vi.mock("../../api", () => ({
-  restartRuntime: mocks.restartRuntime,
-  stopRuntime: mocks.stopRuntime,
 }));
 
 type DownloadHandler = (event: {
@@ -34,7 +27,7 @@ function makeUpdate(
   }> = {}
 ) {
   return {
-    version: "0.4.11",
+    version: "0.5.0",
     date: "2026-06-10",
     body: "test update",
     download:
@@ -62,8 +55,6 @@ beforeEach(() => {
     value: {},
   });
   mocks.relaunch.mockResolvedValue(undefined);
-  mocks.restartRuntime.mockResolvedValue(undefined);
-  mocks.stopRuntime.mockResolvedValue(undefined);
 });
 
 describe("useUpdateChecker", () => {
@@ -75,7 +66,7 @@ describe("useUpdateChecker", () => {
 
     await waitFor(() => expect(result.current.status).toBe("available"));
     expect(result.current.updateInfo).toEqual({
-      version: "0.4.11",
+      version: "0.5.0",
       date: "2026-06-10",
       notes: "test update",
     });
@@ -119,13 +110,13 @@ describe("useUpdateChecker", () => {
     });
 
     expect(mocks.check).toHaveBeenCalledTimes(2);
-    expect(result.current.updateInfo?.version).toBe("0.4.11");
+    expect(result.current.updateInfo?.version).toBe("0.5.0");
     expect(update.download).toHaveBeenCalledTimes(1);
     expect(update.install).toHaveBeenCalledTimes(1);
     expect(result.current.status).toBe("ready");
   });
 
-  it("downloads, stops runtime, installs, then relaunches in order", async () => {
+  it("downloads, installs, then relaunches in order", async () => {
     const order: string[] = [];
     const update = makeUpdate({
       download: vi.fn(async (handler: DownloadHandler) => {
@@ -138,9 +129,6 @@ describe("useUpdateChecker", () => {
         order.push("install");
       }),
     });
-    mocks.stopRuntime.mockImplementation(async () => {
-      order.push("stopRuntime");
-    });
     mocks.relaunch.mockImplementation(async () => {
       order.push("relaunch");
     });
@@ -151,12 +139,12 @@ describe("useUpdateChecker", () => {
       await result.current.downloadAndInstall();
     });
 
-    expect(order).toEqual(["download", "stopRuntime", "install", "relaunch"]);
+    expect(order).toEqual(["download", "install", "relaunch"]);
     expect(result.current.progress).toEqual({ downloaded: 100, total: 100 });
     expect(result.current.status).toBe("ready");
   });
 
-  it("does not stop runtime when downloading fails", async () => {
+  it("does not install when downloading fails", async () => {
     const update = makeUpdate({
       download: vi.fn(async () => {
         throw new Error("download failed");
@@ -168,53 +156,23 @@ describe("useUpdateChecker", () => {
       await result.current.downloadAndInstall();
     });
 
-    expect(mocks.stopRuntime).not.toHaveBeenCalled();
     expect(update.install).not.toHaveBeenCalled();
     expect(result.current.status).toBe("error");
     expect(result.current.error).toBe("download failed");
   });
 
-  it("does not install when stopping runtime fails", async () => {
-    const update = makeUpdate();
-    mocks.stopRuntime.mockRejectedValue(new Error("stop failed"));
-    const { result } = await renderAvailableHook(update);
-
-    await act(async () => {
-      await result.current.downloadAndInstall();
-    });
-
-    expect(mocks.stopRuntime).toHaveBeenCalledTimes(1);
-    expect(update.install).not.toHaveBeenCalled();
-    expect(result.current.status).toBe("error");
-    expect(result.current.error).toBe(
-      "Failed to stop runtime before installing update: stop failed"
-    );
-  });
-
-  it("restarts runtime when installing fails after runtime was stopped", async () => {
-    const order: string[] = [];
+  it("does not relaunch when installing fails", async () => {
     const update = makeUpdate({
-      download: vi.fn(async () => {
-        order.push("download");
-      }),
       install: vi.fn(async () => {
-        order.push("install");
         throw new Error("install failed");
       }),
     });
-    mocks.stopRuntime.mockImplementation(async () => {
-      order.push("stopRuntime");
-    });
-    mocks.restartRuntime.mockImplementation(async () => {
-      order.push("restartRuntime");
-    });
     const { result } = await renderAvailableHook(update);
 
     await act(async () => {
       await result.current.downloadAndInstall();
     });
 
-    expect(order).toEqual(["download", "stopRuntime", "install", "restartRuntime"]);
     expect(mocks.relaunch).not.toHaveBeenCalled();
     expect(result.current.status).toBe("error");
     expect(result.current.error).toBe("install failed");

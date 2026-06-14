@@ -1,101 +1,132 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { health, getDevices, getConfig, saveConfig, getGlossary, getSessions } from "../api";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createGlossaryTerm,
+  deleteGlossaryTerm,
+  getConfig,
+  getDevices,
+  getGlossary,
+  getSessionSegments,
+  getSessions,
+  health,
+  saveConfig,
+  startSession,
+  stopSession,
+  testAsr,
+  testTranslation,
+  updateGlossaryTerm,
+} from "../api";
 
-const mockFetch = vi.fn();
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
+}));
 
 beforeEach(() => {
-  vi.stubGlobal("fetch", mockFetch);
-  mockFetch.mockReset();
+  mocks.invoke.mockReset();
 });
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(data),
-  } as Response;
-}
-
-describe("health", () => {
-  it("returns status from /api/health", async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ status: "ok" }));
-    const result = await health();
-    expect(result.status).toBe("ok");
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/health"),
-      expect.objectContaining({ headers: expect.any(Object) })
-    );
+describe("api adapter", () => {
+  it("calls health_check", async () => {
+    mocks.invoke.mockResolvedValue({ status: "ok" });
+    await expect(health()).resolves.toEqual({ status: "ok" });
+    expect(mocks.invoke).toHaveBeenCalledWith("health_check");
   });
-});
 
-describe("getDevices", () => {
-  it("extracts devices array from response", async () => {
+  it("loads devices directly from list_devices", async () => {
     const devices = [
-      { id: "dev_1", name: "Speaker", kind: "system", isDefault: true, available: true },
+      { id: "input_0", name: "Microphone", kind: "microphone", isDefault: true, available: true },
     ];
-    mockFetch.mockResolvedValue(jsonResponse({ devices }));
-    const result = await getDevices();
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("dev_1");
+    mocks.invoke.mockResolvedValue(devices);
+    await expect(getDevices()).resolves.toEqual(devices);
+    expect(mocks.invoke).toHaveBeenCalledWith("list_devices");
   });
-});
 
-describe("getConfig", () => {
-  it("returns runtime config", async () => {
+  it("loads and saves config", async () => {
     const config = { baseUrl: "https://api.openai.com/v1", apiKey: "test" };
-    mockFetch.mockResolvedValue(jsonResponse(config));
-    const result = await getConfig();
-    expect(result.baseUrl).toBe("https://api.openai.com/v1");
-  });
-});
+    mocks.invoke.mockResolvedValue(config);
+    await expect(getConfig()).resolves.toEqual(config);
+    expect(mocks.invoke).toHaveBeenCalledWith("get_config");
 
-describe("saveConfig", () => {
-  it("sends POST with config body", async () => {
-    const config = { baseUrl: "https://api.openai.com/v1", apiKey: "new-key" };
-    mockFetch.mockResolvedValue(jsonResponse(config));
     await saveConfig(config as never);
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/config"),
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify(config),
-      })
-    );
+    expect(mocks.invoke).toHaveBeenCalledWith("save_config", { config });
   });
-});
 
-describe("getGlossary", () => {
-  it("extracts terms array", async () => {
-    const terms = [{ id: "t1", source: "hello", target: "你好", enabled: true }];
-    mockFetch.mockResolvedValue(jsonResponse({ terms }));
-    const result = await getGlossary();
-    expect(result).toHaveLength(1);
-    expect(result[0].source).toBe("hello");
+  it("maps session commands", async () => {
+    const body = {
+      inputDeviceId: "input_0",
+      sourceLang: "en",
+      targetLang: "zh-CN",
+      displayMode: "bilingual",
+      asrProvider: "openai-compatible",
+      translationProvider: "openai-compatible",
+    };
+    mocks.invoke.mockResolvedValue({ id: "s1" });
+    await startSession(body);
+    expect(mocks.invoke).toHaveBeenCalledWith("start_session", { request: body });
+
+    await stopSession();
+    expect(mocks.invoke).toHaveBeenCalledWith("stop_session");
   });
-});
 
-describe("getSessions", () => {
-  it("extracts sessions array", async () => {
-    const sessions = [{ id: "s1", title: "Test", sourceLang: "en", targetLang: "zh-CN" }];
-    mockFetch.mockResolvedValue(jsonResponse({ sessions }));
-    const result = await getSessions();
-    expect(result).toHaveLength(1);
+  it("maps history and glossary commands", async () => {
+    mocks.invoke.mockResolvedValue([]);
+    await getSessions();
+    expect(mocks.invoke).toHaveBeenCalledWith("list_sessions");
+
+    await getSessionSegments("s1");
+    expect(mocks.invoke).toHaveBeenCalledWith("get_segments", { sessionId: "s1" });
+
+    await getGlossary();
+    expect(mocks.invoke).toHaveBeenCalledWith("list_glossary");
+
+    const term = { source: "latency", target: "delay", enabled: true };
+    await createGlossaryTerm(term);
+    expect(mocks.invoke).toHaveBeenCalledWith("create_glossary", { term });
+
+    const saved = { id: "t1", ...term };
+    await updateGlossaryTerm(saved);
+    expect(mocks.invoke).toHaveBeenCalledWith("update_glossary", { term: saved });
+
+    await deleteGlossaryTerm("t1");
+    expect(mocks.invoke).toHaveBeenCalledWith("delete_glossary", { id: "t1" });
   });
-});
 
-describe("error handling", () => {
-  it("throws on non-ok response", async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ error: "not found" }, 404));
+  it("maps connectivity tests", async () => {
+    const config = {
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "key",
+      asrBaseUrl: "",
+      asrApiKey: "",
+      asrModel: "whisper-1",
+      translationModel: "gpt-4o-mini",
+    };
+    mocks.invoke.mockResolvedValue({ ok: true });
+    await testAsr(config);
+    expect(mocks.invoke).toHaveBeenCalledWith("test_asr", {
+      request: {
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        asrBaseUrl: config.asrBaseUrl,
+        asrApiKey: config.asrApiKey,
+        asrModel: config.asrModel,
+      },
+    });
+
+    await testTranslation(config);
+    expect(mocks.invoke).toHaveBeenCalledWith("test_translation", {
+      request: {
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        translationModel: config.translationModel,
+      },
+    });
+  });
+
+  it("propagates invoke errors", async () => {
+    mocks.invoke.mockRejectedValue(new Error("not found"));
     await expect(health()).rejects.toThrow("not found");
-  });
-
-  it("falls back to statusText when body has no error", async () => {
-    mockFetch.mockResolvedValue(jsonResponse(null, 500));
-    await expect(health()).rejects.toThrow("Error");
   });
 });

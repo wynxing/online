@@ -1,51 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Device, GlossaryTerm, RuntimeConfig, SessionRecord, SubtitleSegment } from "./types";
 
-const isDev = import.meta.env.DEV;
-export const RUNTIME_HTTP = isDev ? "" : "http://127.0.0.1:8765";
-export const RUNTIME_WS = isDev
-  ? `ws://${window.location.host}/ws/subtitles`
-  : "ws://127.0.0.1:8765/ws/subtitles";
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${RUNTIME_HTTP}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = await response.json();
-      if (body?.error) detail = body.error;
-    } catch {
-      // ignore
-    }
-    throw new Error(detail);
-  }
-  return response.json() as Promise<T>;
-}
-
 export function health(): Promise<{ status: string }> {
-  return request("/api/health");
+  return invoke("health_check");
 }
 
-export async function getDevices(): Promise<Device[]> {
-  const data = await request<{ devices: Device[] }>("/api/devices");
-  return data.devices;
+export function getDevices(): Promise<Device[]> {
+  return invoke("list_devices");
 }
 
 export function getConfig(): Promise<RuntimeConfig> {
-  return request("/api/config");
+  return invoke("get_config");
 }
 
 export function saveConfig(config: RuntimeConfig): Promise<RuntimeConfig> {
-  return request("/api/config", {
-    method: "POST",
-    body: JSON.stringify(config),
-  });
+  return invoke("save_config", { config });
 }
 
 export function startSession(body: {
@@ -56,95 +25,59 @@ export function startSession(body: {
   asrProvider: string;
   translationProvider: string;
 }): Promise<SessionRecord> {
-  return request("/api/session/start", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  return invoke("start_session", { request: body });
 }
 
 export function stopSession(): Promise<SessionRecord | { status: string }> {
-  return request("/api/session/stop", { method: "POST" });
+  return invoke("stop_session");
 }
 
-export async function getSessions(): Promise<SessionRecord[]> {
-  const data = await request<{ sessions: SessionRecord[] }>("/api/sessions");
-  return data.sessions;
+export function getSessions(): Promise<SessionRecord[]> {
+  return invoke("list_sessions");
 }
 
-export async function getSessionSegments(sessionId: string): Promise<SubtitleSegment[]> {
-  const data = await request<{ segments: SubtitleSegment[] }>(
-    `/api/sessions/${sessionId}/segments`
-  );
-  return data.segments;
+export function getSessionSegments(sessionId: string): Promise<SubtitleSegment[]> {
+  return invoke("get_segments", { sessionId });
 }
 
-export async function getGlossary(): Promise<GlossaryTerm[]> {
-  const data = await request<{ terms: GlossaryTerm[] }>("/api/glossary");
-  return data.terms;
+export function getGlossary(): Promise<GlossaryTerm[]> {
+  return invoke("list_glossary");
 }
 
 export function createGlossaryTerm(term: Omit<GlossaryTerm, "id">): Promise<GlossaryTerm> {
-  return request("/api/glossary", {
-    method: "POST",
-    body: JSON.stringify(term),
-  });
+  return invoke("create_glossary", { term });
 }
 
 export function updateGlossaryTerm(term: GlossaryTerm): Promise<GlossaryTerm> {
-  return request(`/api/glossary/${term.id}`, {
-    method: "PUT",
-    body: JSON.stringify({
-      source: term.source,
-      target: term.target,
-      domain: term.domain,
-      enabled: term.enabled,
-    }),
-  });
+  return invoke("update_glossary", { term });
 }
 
 export function deleteGlossaryTerm(id: string): Promise<{ deleted: boolean }> {
-  return request(`/api/glossary/${id}`, { method: "DELETE" });
+  return invoke("delete_glossary", { id });
 }
 
 export function testTranslation(
   config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "translationModel">
 ): Promise<{ ok: boolean; sample?: string; model: string; base_url: string; error?: string }> {
-  return request("/api/test-translation", {
-    method: "POST",
-    body: JSON.stringify({
+  return invoke("test_translation", {
+    request: {
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       translationModel: config.translationModel,
-    }),
+    },
   });
 }
 
 export function testAsr(
   config: Pick<RuntimeConfig, "baseUrl" | "apiKey" | "asrBaseUrl" | "asrApiKey" | "asrModel">
 ): Promise<{ ok: boolean; model: string; base_url: string; error?: string }> {
-  return request("/api/test-asr", {
-    method: "POST",
-    body: JSON.stringify({
+  return invoke("test_asr", {
+    request: {
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       asrBaseUrl: config.asrBaseUrl,
       asrApiKey: config.asrApiKey,
       asrModel: config.asrModel,
-    }),
+    },
   });
-}
-
-export function getRuntimeStatus(): Promise<{ alive: boolean; error: string | null }> {
-  if (isDev) return Promise.resolve({ alive: true, error: null });
-  return invoke("runtime_status");
-}
-
-export function restartRuntime(): Promise<void> {
-  if (isDev) return Promise.resolve();
-  return invoke("restart_runtime");
-}
-
-export function stopRuntime(): Promise<void> {
-  if (isDev) return Promise.resolve();
-  return invoke("stop_runtime");
 }

@@ -6,6 +6,7 @@ export type RuntimeStatus = "checking" | "connected" | "disconnected";
 export interface Device {
   id: string;
   name: string;
+  displayName?: string;
   kind: "system" | "microphone" | "mock";
   isDefault: boolean;
   available: boolean;
@@ -26,6 +27,8 @@ export interface RuntimeConfig {
   asrApiKey: string;
   asrModel: string;
   asrLanguage: string;
+  sourceLang: string;
+  targetLang: string;
   asrFormat: string;
   asrConcurrency: number;
   translationConcurrency: number;
