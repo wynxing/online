@@ -5,17 +5,14 @@
     "apps/desktop"
   ],
   "scripts": {
-    "runtime": "python runtime/run.py",
     "desktop": "npm run dev -w apps/desktop",
     "desktop:build": "npm run build -w apps/desktop",
     "tauri": "npm run tauri -w apps/desktop",
     "tauri:dev": "npm run tauri:dev -w apps/desktop",
-    "runtime:sidecar": "node scripts/build-runtime-sidecar.mjs",
     "release:local": "node scripts/build-release-local.mjs",
     "lint": "npm run lint -w apps/desktop",
     "lint:fix": "npm run lint:fix -w apps/desktop",
     "test": "npm run test -w apps/desktop",
-    "test:runtime": "cd runtime && python -m pytest tests/ -v --tb=short",
     "test:coverage": "npm run test:coverage -w apps/desktop",
     "version:bump": "powershell -ExecutionPolicy Bypass -File scripts/bump-version.ps1",
     "prepare": "husky"
@@ -29,10 +26,6 @@
     "apps/desktop/src/**/*.{ts,tsx}": [
       "eslint --fix",
       "prettier --write"
-    ],
-    "runtime/**/*.py": [
-      "ruff check --fix",
-      "ruff format"
     ]
   }
 }

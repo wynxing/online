@@ -7,9 +7,8 @@ Thank you for your interest in contributing! This guide will help you get starte
 ### Prerequisites
 
 - Node.js 22+
-- Python 3.10+
+- npm 10+
 - Rust (stable)
-- npm
 
 ### Getting Started
 
@@ -19,44 +18,26 @@ Thank you for your interest in contributing! This guide will help you get starte
    cd ai-simultaneous-interpretation-assistant
    ```
 
-2. Install frontend dependencies:
+2. Install dependencies:
    ```bash
    npm install
    ```
 
-3. Install Python dependencies:
+3. Start development:
    ```bash
-   cd runtime
-   pip install -r requirements.txt
-   pip install -r requirements-dev.txt
-   ```
-
-4. Start development:
-   ```bash
-   # Terminal 1: Python runtime
-   npm run runtime
-
-   # Terminal 2: Desktop app
    npm run tauri:dev
    ```
 
 ## Code Quality
 
-### Linting
+### Linting & Formatting
 
-- **TypeScript**: `npm run lint` (ESLint)
-- **Python**: `cd runtime && ruff check app/ tests/`
-
-### Formatting
-
-- **TypeScript**: `npm run format` (Prettier)
-- **Python**: `cd runtime && ruff format app/ tests/`
+- **TypeScript**: `npm run lint` (ESLint) / `npm run format` (Prettier)
+- **Rust**: `cargo clippy` / `cargo fmt`
 
 ### Pre-commit Hooks
 
-Pre-commit hooks run automatically on `git commit`. They will:
-- Lint and format staged TypeScript files
-- Lint and format staged Python files
+Pre-commit hooks run automatically on `git commit`. They lint and format staged TypeScript files.
 
 To run manually: `npx lint-staged`
 
@@ -70,17 +51,16 @@ npm run test:watch        # Watch mode
 npm run test:coverage     # With coverage
 ```
 
-### Python Tests
+### Rust Tests
 
 ```bash
-npm run test:runtime      # Run all tests
-cd runtime && python -m pytest tests/ -v --cov=app  # With coverage
+cd apps/desktop/src-tauri
+cargo test
 ```
 
 ### Test Coverage
 
 - Frontend: Aim for 80%+ coverage on new code
-- Python: Coverage threshold is 60%
 
 ## Commit Messages
 
@@ -104,8 +84,8 @@ Types:
 Examples:
 ```
 feat: add real-time subtitle export
-fix: handle WebSocket reconnection on network loss
-refactor: extract audio processing into separate module
+fix: handle audio capture device switching
+refactor: extract pipeline into separate module
 ```
 
 ## Pull Request Process
@@ -116,7 +96,7 @@ refactor: extract audio processing into separate module
    ```bash
    npm run lint
    npm run test
-   cd runtime && python -m pytest tests/
+   cd apps/desktop/src-tauri && cargo test
    ```
 4. Submit a pull request with a clear description
 
@@ -127,14 +107,15 @@ refactor: extract audio processing into separate module
 │   ├── src/              # Source code
 │   │   ├── components/   # React components
 │   │   ├── hooks/        # Custom React hooks
-│   │   ├── utils/        # Utility functions
 │   │   └── test/         # Frontend tests
 │   └── src-tauri/        # Rust Tauri code
-├── runtime/              # Python FastAPI backend
-│   ├── app/             # Application code
-│   │   └── pipeline/    # ASR + Translation pipeline
-│   └── tests/           # Python tests
-└── scripts/             # Build and dev scripts
+│       └── src/
+│           ├── commands/ # Tauri invoke handlers
+│           ├── api/      # ASR and translation clients
+│           ├── audio/    # Device listing and capture
+│           ├── pipeline/ # Capture -> ASR -> translation
+│           └── storage/  # SQLite persistence
+└── scripts/              # Build and dev scripts
 ```
 
 ## Questions?

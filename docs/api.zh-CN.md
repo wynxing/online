@@ -1,10 +1,10 @@
-# Runtime API
+# 运行时 API
 
-The runtime API is exposed through Tauri commands and events inside the desktop process. There is no HTTP base URL and no WebSocket endpoint.
+运行时 API 通过 Tauri 命令和事件暴露在桌面进程内部，没有 HTTP 基础 URL，也没有 WebSocket 端点。
 
-## Commands
+## 命令
 
-| Command | Returns |
+| 命令 | 返回值 |
 | --- | --- |
 | `health_check` | `{ status: "ok" }` |
 | `list_devices` | `Device[]` |
@@ -18,19 +18,19 @@ The runtime API is exposed through Tauri commands and events inside the desktop 
 | `create_glossary` | `GlossaryTerm` |
 | `update_glossary` | `GlossaryTerm` |
 | `delete_glossary` | `{ deleted: true }` |
-| `test_asr` | connectivity result |
-| `test_translation` | connectivity result with sample |
+| `test_asr` | 连接测试结果 |
+| `test_translation` | 连接测试结果（含示例） |
 
-Frontend calls use `@tauri-apps/api/core`:
+前端通过 `@tauri-apps/api/core` 调用：
 
 ```ts
 const devices = await invoke<Device[]>("list_devices");
 const record = await invoke<SessionRecord>("start_session", { request });
 ```
 
-## Events
+## 事件
 
-| Event | Payload |
+| 事件 | 载荷 |
 | --- | --- |
 | `session:status` | `{ sessionId?, status, updatedAt }` |
 | `subtitle:segment-created` | `SubtitleSegment` |
@@ -39,7 +39,7 @@ const record = await invoke<SessionRecord>("start_session", { request });
 | `pipeline:metrics` | `PipelineMetricsPayload` |
 | `runtime:error` | `RuntimeErrorPayload` |
 
-Frontend listeners use `@tauri-apps/api/event`:
+前端通过 `@tauri-apps/api/event` 监听：
 
 ```ts
 const unlisten = await listen<SubtitleSegment>("subtitle:segment-updated", (event) => {
