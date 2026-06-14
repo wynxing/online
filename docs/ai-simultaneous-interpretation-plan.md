@@ -1,5 +1,15 @@
 # AI 同声传译助手项目方案
 
+> ⚠️ **历史归档（2026-06-14 标注）**
+>
+> 本文档为 v0.5.0 之前 Python FastAPI sidecar 架构的设计方案，仅保留作为历史参考。
+> v0.5.0 起，Runtime 已全面迁移为 Rust/Tauri 原生实现：
+> - Python sidecar、FastAPI、WebSocket、PyInstaller 打包流程已全部移除
+> - 当前后端为单进程 Rust 代码，前端通过 Tauri IPC（invoke/listen）通信
+> - 详见 `CHANGELOG.md` v0.5.0 条目
+>
+> 本文中关于 Python 模块、`runtime/` 目录、HTTP 端口、PyInstaller 等内容均已不再适用。
+
 ## 1. 项目概述
 
 AI 同声传译助手是一款面向外语音视频内容观看场景的桌面应用。用户在观看英语演讲、技术分享、国际会议、网课或其他外语内容时，可以通过本应用实时获取中文翻译字幕，从而降低语言门槛，提升信息获取效率。
