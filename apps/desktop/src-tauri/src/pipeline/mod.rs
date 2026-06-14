@@ -46,19 +46,16 @@ const SIGNAL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 const NO_SIGNAL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Regex: sentence-ending punctuation with optional closing quotes/brackets.
-static RE_SENTENCE_BOUNDARY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"[.!?…]["')\]]*(?:\s+|$)"#).unwrap()
-});
+static RE_SENTENCE_BOUNDARY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[.!?…]["')\]]*(?:\s+|$)"#).unwrap());
 
 /// Regex: text ending with sentence punctuation.
-static RE_SENTENCE_END: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"[.!?…]["')\]]*\s*$"#).unwrap()
-});
+static RE_SENTENCE_END: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[.!?…]["')\]]*\s*$"#).unwrap());
 
 /// Regex: comma/semicolon followed by space and an uppercase letter (fallback for long segments).
-static RE_LONG_SEGMENT_BOUNDARY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"[,;]["')\]]*\s+[A-Z]"#).unwrap()
-});
+static RE_LONG_SEGMENT_BOUNDARY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[,;]["')\]]*\s+[A-Z]"#).unwrap());
 
 /// Regex: whitespace before punctuation (for join cleanup).
 static RE_SPACE_BEFORE_PUNCT: LazyLock<Regex> =
@@ -104,10 +101,7 @@ fn join_source_text(parts: &[&str]) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     let text = RE_SPACE_BEFORE_PUNCT.replace_all(&text, "$1").to_string();
-    RE_MULTI_SPACE
-        .replace_all(&text, " ")
-        .trim()
-        .to_string()
+    RE_MULTI_SPACE.replace_all(&text, " ").trim().to_string()
 }
 
 #[derive(Clone)]
@@ -535,33 +529,38 @@ async fn asr_task(
                         superseded_by: None,
                     };
                     let _ = app.emit("subtitle:segment-created", &interim);
-                    emit_metrics(&app, PipelineMetricsPayload {
-                        session_id: Some(session_id.clone()),
-                        segment_id: Some(segment.id.clone()),
-                        stage: "asr".into(),
-                        status: "finished".into(),
-                        updated_at: Some(now_iso()),
-                        drop_reason: None,
-                        dropped_count: None,
-                        worker_id: Some(worker_id as u32),
-                        audio_start: Some(segment.start_time),
-                        audio_end: Some(segment.end_time),
-                        audio_duration_ms: Some((segment.end_time - segment.start_time) * 1000.0),
-                        asr_duration_ms: Some(asr_ms),
-                        translation_duration_ms: None,
-                        end_to_end_ms: None,
-                        queue_lag_ms: Some(queue_lag_ms),
-                        segment_queue_size: None,
-                        translation_queue_size: None,
-                        frames: None,
-                        segments: None,
-                        low_energy_drops: None,
-                        last_frame_rms: None,
-                        max_frame_rms: None,
-                        last_segment_rms: None,
-                        max_segment_rms: None,
-                        error: None,
-                    });
+                    emit_metrics(
+                        &app,
+                        PipelineMetricsPayload {
+                            session_id: Some(session_id.clone()),
+                            segment_id: Some(segment.id.clone()),
+                            stage: "asr".into(),
+                            status: "finished".into(),
+                            updated_at: Some(now_iso()),
+                            drop_reason: None,
+                            dropped_count: None,
+                            worker_id: Some(worker_id as u32),
+                            audio_start: Some(segment.start_time),
+                            audio_end: Some(segment.end_time),
+                            audio_duration_ms: Some(
+                                (segment.end_time - segment.start_time) * 1000.0,
+                            ),
+                            asr_duration_ms: Some(asr_ms),
+                            translation_duration_ms: None,
+                            end_to_end_ms: None,
+                            queue_lag_ms: Some(queue_lag_ms),
+                            segment_queue_size: None,
+                            translation_queue_size: None,
+                            frames: None,
+                            segments: None,
+                            low_energy_drops: None,
+                            last_frame_rms: None,
+                            max_frame_rms: None,
+                            last_segment_rms: None,
+                            max_segment_rms: None,
+                            error: None,
+                        },
+                    );
                     *recent_source.lock().unwrap() = Some(source_text.clone());
                     let _ = tx
                         .send(RecognizedSegment {
@@ -639,7 +638,13 @@ async fn translation_dispatcher(
                 queue_lag_ms = (queue_lag * 1000.0) as u64,
                 "Drop stale translation segment"
             );
-            emit_drop_metrics(&app, &session_id, &segment.id, "translation_stale", queue_lag);
+            emit_drop_metrics(
+                &app,
+                &session_id,
+                &segment.id,
+                "translation_stale",
+                queue_lag,
+            );
             continue;
         }
 
@@ -664,10 +669,13 @@ async fn translation_dispatcher(
             // Spawn a task to forward tokens from the channel to Tauri events.
             let emitter = tokio::spawn(async move {
                 while let Some(token) = token_rx.recv().await {
-                    let _ = app_clone.emit("subtitle:token", serde_json::json!({
-                        "segment_id": seg_id,
-                        "token": token,
-                    }));
+                    let _ = app_clone.emit(
+                        "subtitle:token",
+                        serde_json::json!({
+                            "segment_id": seg_id,
+                            "token": token,
+                        }),
+                    );
                 }
             });
 
@@ -839,7 +847,13 @@ async fn emit_translated_segment(
 
         let started = Instant::now();
         match translation
-            .translate(&correction_source, source_lang, target_lang, glossary, context)
+            .translate(
+                &correction_source,
+                source_lang,
+                target_lang,
+                glossary,
+                context,
+            )
             .await
         {
             Ok(correction_text) => {
