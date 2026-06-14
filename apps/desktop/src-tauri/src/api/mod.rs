@@ -164,7 +164,7 @@ impl TranslationClient {
             return Err(AppError::Config("Translation model is required.".into()));
         }
 
-        let key = normalize_cache_key(source_text);
+        let key = normalize_cache_key(source_lang, target_lang, source_text);
         if let Some(value) = self.cache.get(&key) {
             return Ok(value.clone());
         }
@@ -268,11 +268,14 @@ fn parse_chat_text(response: ChatResponse) -> AppResult<String> {
         .ok_or_else(|| AppError::InvalidApiResponse("missing chat completion content".into()))
 }
 
-fn normalize_cache_key(text: &str) -> String {
-    text.split_whitespace()
+/// Cache key includes language pair to prevent cross-language cache hits.
+fn normalize_cache_key(source_lang: &str, target_lang: &str, text: &str) -> String {
+    let normalized = text
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
+        .to_lowercase();
+    format!("{source_lang}:{target_lang}:{normalized}")
 }
 
 fn matched_glossary_terms(
@@ -351,7 +354,10 @@ fn enforce_glossary(translated: &str, terms: &[GlossaryTerm]) -> String {
             continue;
         }
         let pattern = Regex::new(&format!("(?i){}", regex::escape(&term.source))).unwrap();
-        value = pattern.replace(&value, term.target.as_str()).to_string();
+        // Use literal replacement: term.target may contain "$0" or "${name}"
+        // which would trigger capture-group expansion in Regex::replace.
+        let literal = regex::NoExpand(&term.target);
+        value = pattern.replace(&value, literal).to_string();
     }
     value
 }
@@ -540,6 +546,30 @@ mod tests {
 
     #[test]
     fn cache_key_normalizes_case_and_whitespace() {
-        assert_eq!(normalize_cache_key("  Hello   World  "), "hello world");
+        assert_eq!(
+            normalize_cache_key("en", "zh-CN", "  Hello   World  "),
+            "en:zh-CN:hello world"
+        );
+    }
+
+    #[test]
+    fn glossary_replacement_is_literal_not_capture_group() {
+        let terms = vec![GlossaryTerm {
+            id: "1".into(),
+            source: "foo".into(),
+            target: "$0".into(),
+            domain: None,
+            enabled: true,
+        }];
+        // If $0 were treated as a capture group, the result would be "foo" (the
+        // matched text). With NoExpand it must be the literal "$0".
+        assert_eq!(enforce_glossary("say foo here", &terms), "say $0 here");
+    }
+
+    #[test]
+    fn cache_key_includes_language_pair() {
+        let key_en_zh = normalize_cache_key("en", "zh-CN", "hello world");
+        let key_en_ja = normalize_cache_key("en", "ja", "hello world");
+        assert_ne!(key_en_zh, key_en_ja);
     }
 }
