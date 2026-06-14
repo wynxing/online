@@ -65,7 +65,13 @@ pub struct Storage {
 impl Storage {
     pub fn new() -> AppResult<Self> {
         let dir = data_dir();
-        std::fs::create_dir_all(&dir)?;
+        Self::new_with_dir(&dir)
+    }
+
+    /// Creates a Storage instance pointing at an explicit directory.
+    /// Used by tests to avoid `set_var` on global env.
+    pub fn new_with_dir(dir: &std::path::Path) -> AppResult<Self> {
+        std::fs::create_dir_all(dir)?;
         let conn = Connection::open(dir.join("runtime.sqlite3"))?;
         conn.execute_batch(MIGRATIONS)?;
         Ok(Self {
@@ -329,16 +335,16 @@ fn str_to_status(status: &str) -> SubtitleStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn temp_storage() -> (Storage, PathBuf) {
+        let temp = std::env::temp_dir().join(format!("online-test-{}", uuid::Uuid::new_v4()));
+        let storage = Storage::new_with_dir(&temp).unwrap();
+        (storage, temp)
+    }
 
     #[tokio::test]
     async fn config_round_trips() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let temp = tempfile_dir();
-        std::env::set_var("ONLINE_DATA_DIR", &temp);
-        let storage = Storage::new().unwrap();
+        let (storage, temp) = temp_storage();
         let saved = storage
             .save_config(RuntimeConfig {
                 api_key: "test".into(),
@@ -353,10 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_crud_round_trips() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let temp = tempfile_dir();
-        std::env::set_var("ONLINE_DATA_DIR", &temp);
-        let storage = Storage::new().unwrap();
+        let (storage, temp) = temp_storage();
         storage
             .create_session(make_session("session_1"))
             .await
@@ -378,10 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn segment_upsert_keeps_highest_version() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let temp = tempfile_dir();
-        std::env::set_var("ONLINE_DATA_DIR", &temp);
-        let storage = Storage::new().unwrap();
+        let (storage, temp) = temp_storage();
         storage
             .create_session(make_session("session_1"))
             .await
@@ -402,10 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn glossary_crud_round_trips() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let temp = tempfile_dir();
-        std::env::set_var("ONLINE_DATA_DIR", &temp);
-        let storage = Storage::new().unwrap();
+        let (storage, temp) = temp_storage();
         let term = storage
             .create_glossary(GlossaryTermInput {
                 source: "latency".into(),
@@ -419,10 +416,6 @@ mod tests {
         storage.delete_glossary(term.id).await.unwrap();
         assert_eq!(storage.list_glossary().await.unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(temp);
-    }
-
-    fn tempfile_dir() -> PathBuf {
-        std::env::temp_dir().join(format!("online-test-{}", uuid::Uuid::new_v4()))
     }
 
     fn make_session(id: &str) -> SessionRecord {

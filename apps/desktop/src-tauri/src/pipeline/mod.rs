@@ -383,6 +383,7 @@ async fn asr_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn translation_task(
     mut rx: mpsc::Receiver<RecognizedSegment>,
     mut translation: TranslationClient,

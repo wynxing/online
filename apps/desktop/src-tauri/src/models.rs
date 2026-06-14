@@ -2,18 +2,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DisplayMode {
     Source,
     Translated,
+    #[default]
     Bilingual,
-}
-
-impl Default for DisplayMode {
-    fn default() -> Self {
-        Self::Bilingual
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
