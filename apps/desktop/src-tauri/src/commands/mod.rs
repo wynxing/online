@@ -19,16 +19,46 @@ pub async fn list_devices() -> Result<Vec<crate::models::Device>, String> {
     Ok(audio::list_devices())
 }
 
+/// Returns config with API keys replaced by presence indicators,
+/// preventing key material from crossing the IPC boundary.
 #[tauri::command]
-pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<RuntimeConfig, String> {
-    map(state.storage.load_config().await)
+pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let config = state.storage.load_config().await.map_err(to_string)?;
+    let mut value = serde_json::to_value(&config).map_err(|e| e.to_string())?;
+    if let Some(obj) = value.as_object_mut() {
+        let key_present = |v: &serde_json::Value| match v.as_str() {
+            Some(s) if !s.is_empty() => "••••",
+            _ => "",
+        };
+        if let Some(v) = obj.get("apiKey") {
+            let redacted = key_present(v);
+            obj.insert("apiKey".into(), serde_json::Value::String(redacted.into()));
+        }
+        if let Some(v) = obj.get("asrApiKey") {
+            let redacted = key_present(v);
+            obj.insert(
+                "asrApiKey".into(),
+                serde_json::Value::String(redacted.into()),
+            );
+        }
+    }
+    Ok(value)
 }
 
 #[tauri::command]
 pub async fn save_config(
     state: tauri::State<'_, AppState>,
-    config: RuntimeConfig,
+    mut config: RuntimeConfig,
 ) -> Result<RuntimeConfig, String> {
+    // If the frontend sends back the redacted placeholder, preserve the
+    // existing key instead of overwriting it with "••••".
+    let existing = state.storage.load_config().await.map_err(to_string)?;
+    if config.api_key == "••••" {
+        config.api_key = existing.api_key;
+    }
+    if config.asr_api_key == "••••" {
+        config.asr_api_key = existing.asr_api_key;
+    }
     map(state.storage.save_config(config).await)
 }
 

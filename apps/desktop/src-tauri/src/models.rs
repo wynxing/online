@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,7 +37,8 @@ pub struct Device {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Runtime config with redacted secrets in Debug output.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeConfig {
     pub base_url: String,
@@ -60,6 +63,35 @@ pub struct RuntimeConfig {
     pub segment_max_duration: f32,
     pub segment_silence_duration: f32,
     pub diagnostics_enabled: bool,
+}
+
+impl fmt::Debug for RuntimeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .field("translation_model", &self.translation_model)
+            .field("asr_provider", &self.asr_provider)
+            .field("translation_provider", &self.translation_provider)
+            .field("default_input_device_id", &self.default_input_device_id)
+            .field("display_mode", &self.display_mode)
+            .field("font_size", &self.font_size)
+            .field("glossary_enabled", &self.glossary_enabled)
+            .field("asr_base_url", &self.asr_base_url)
+            .field("asr_api_key", &"[REDACTED]")
+            .field("asr_model", &self.asr_model)
+            .field("asr_language", &self.asr_language)
+            .field("source_lang", &self.source_lang)
+            .field("target_lang", &self.target_lang)
+            .field("asr_format", &self.asr_format)
+            .field("asr_concurrency", &self.asr_concurrency)
+            .field("translation_concurrency", &self.translation_concurrency)
+            .field("segment_min_duration", &self.segment_min_duration)
+            .field("segment_max_duration", &self.segment_max_duration)
+            .field("segment_silence_duration", &self.segment_silence_duration)
+            .field("diagnostics_enabled", &self.diagnostics_enabled)
+            .finish()
+    }
 }
 
 impl Default for RuntimeConfig {
