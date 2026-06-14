@@ -6,6 +6,8 @@ pub enum AppError {
     Join(#[from] tokio::task::JoinError),
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("API returned an invalid response: {0}")]
     InvalidApiResponse(String),
     #[error("Audio error: {0}")]

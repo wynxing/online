@@ -65,8 +65,7 @@ pub struct Storage {
 impl Storage {
     pub fn new() -> AppResult<Self> {
         let dir = data_dir();
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| AppError::Storage(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("runtime.sqlite3"))?;
         conn.execute_batch(MIGRATIONS)?;
         Ok(Self {

@@ -51,6 +51,10 @@ impl PipelineManager {
         config: RuntimeConfig,
         glossary: Vec<GlossaryTerm>,
     ) -> AppResult<()> {
+        // Stop any existing pipeline first. The separate is_running()
+        // check in commands/mod.rs is now informational only — the real
+        // guard is here, inside a single lock acquisition, so there is
+        // no TOCTOU race.
         self.blocking_stop();
         let cancel = CancellationToken::new();
         let app = self.app.clone();
@@ -108,7 +112,26 @@ impl PipelineManager {
     pub fn blocking_stop(&self) {
         if let Some(active) = self.inner.lock().unwrap().take() {
             active.cancel.cancel();
-            active.handle.abort();
+            // Do NOT abort: let the CancellationToken propagate so the
+            // cleanup code in the spawned task (finish_session, clearing
+            // inner) can still execute. We synchronously wait for the task
+            // to finish so that ended_at is written to SQLite before return.
+            //
+            // Capture the runtime handle on the calling thread (which IS
+            // inside the Tokio runtime). Handle::current() inside a fresh
+            // std::thread would panic.
+            let Ok(rt) = tokio::runtime::Handle::try_current() else {
+                // No runtime context (e.g. called from a non-async test).
+                // Fall back to abort to avoid hanging.
+                active.handle.abort();
+                return;
+            };
+            let handle = active.handle;
+            std::thread::spawn(move || {
+                let _ = rt.block_on(handle);
+            })
+            .join()
+            .ok();
         }
     }
 }
