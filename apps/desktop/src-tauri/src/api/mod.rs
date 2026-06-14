@@ -17,10 +17,27 @@ const WHISPER_HALLUCINATIONS: &[&str] = &[
     "thank you",
     "thanks for watching",
     "subscribe",
+    "please subscribe",
+    "like and subscribe",
+    "please like",
+    "thank you for watching",
+    "thank you for listening",
+    "bye",
     "goodbye",
+    "see you",
     "see you next time",
+    "if you enjoyed",
+    "don't forget to",
+    "welcome back",
+    "hello everyone",
     "[music]",
     "[applause]",
+    "[laughter]",
+    "you",
+    "um",
+    "uh",
+    "ah",
+    "hmm",
 ];
 
 // Precompiled static regexes — compiled once instead of per-call.
@@ -85,24 +102,27 @@ impl AsrClient {
         Ok(())
     }
 
-    pub async fn transcribe(&self, wav: Vec<u8>) -> AppResult<String> {
+    pub async fn transcribe(&self, wav: Vec<u8>, prompt: Option<&str>) -> AppResult<String> {
         let raw = if self.format == "chat-completions" {
-            self.transcribe_chat(wav).await
+            self.transcribe_chat(wav, prompt).await
         } else {
-            self.transcribe_whisper(wav).await
+            self.transcribe_whisper(wav, prompt).await
         }?;
         Ok(sanitize_asr_text(&raw, &self.language).text)
     }
 
-    async fn transcribe_whisper(&self, wav: Vec<u8>) -> AppResult<String> {
+    async fn transcribe_whisper(&self, wav: Vec<u8>, prompt: Option<&str>) -> AppResult<String> {
         let part = multipart::Part::bytes(wav)
             .file_name("audio.wav")
             .mime_str("audio/wav")
             .map_err(|e| AppError::InvalidApiResponse(e.to_string()))?;
-        let form = multipart::Form::new()
+        let mut form = multipart::Form::new()
             .text("model", self.model.clone())
             .text("language", self.language.clone())
             .part("file", part);
+        if let Some(p) = prompt.filter(|p| !p.is_empty()) {
+            form = form.text("prompt", p.to_string());
+        }
         let response = self
             .http
             .post(format!("{}/audio/transcriptions", self.base_url))
@@ -115,12 +135,17 @@ impl AsrClient {
         Ok(body.text.trim().to_string())
     }
 
-    async fn transcribe_chat(&self, wav: Vec<u8>) -> AppResult<String> {
+    async fn transcribe_chat(&self, wav: Vec<u8>, prompt: Option<&str>) -> AppResult<String> {
         let audio = base64::engine::general_purpose::STANDARD.encode(wav);
+        let system_content = if let Some(p) = prompt.filter(|p| !p.is_empty()) {
+            format!("{CHAT_ASR_SYSTEM_PROMPT}\n\nPrevious context: {p}")
+        } else {
+            CHAT_ASR_SYSTEM_PROMPT.to_string()
+        };
         let body = serde_json::json!({
             "model": self.model,
             "messages": [
-                { "role": "system", "content": CHAT_ASR_SYSTEM_PROMPT },
+                { "role": "system", "content": system_content },
                 {
                     "role": "user",
                     "content": [{
@@ -235,6 +260,119 @@ impl TranslationClient {
         self.cache.put(key, translated.clone());
         Ok(translated)
     }
+
+    /// Streaming translation: POST with `stream: true`, parse SSE tokens,
+    /// send each token chunk through the channel. Returns the full cleaned text.
+    pub async fn translate_streaming(
+        &mut self,
+        source_text: &str,
+        source_lang: &str,
+        target_lang: &str,
+        glossary_terms: &[GlossaryTerm],
+        context: &[(String, String)],
+        token_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    ) -> AppResult<String> {
+        if self.base_url.is_empty() {
+            return Err(AppError::Config("Translation Base URL is required.".into()));
+        }
+        if self.api_key.is_empty() {
+            return Err(AppError::Config("Translation API Key is required.".into()));
+        }
+        if self.model.trim().is_empty() {
+            return Err(AppError::Config("Translation model is required.".into()));
+        }
+
+        let key = normalize_cache_key(source_lang, target_lang, source_text);
+        if let Some(value) = self.cache.get(&key) {
+            if let Some(tx) = &token_tx {
+                let _ = tx.send(value.clone()).await;
+            }
+            return Ok(value.clone());
+        }
+
+        let matched = matched_glossary_terms(source_text, context, glossary_terms);
+        let mut system = translation_system_prompt(source_lang, target_lang);
+        if !matched.is_empty() {
+            system.push_str("\n\nGlossary (apply these translations exactly):\n");
+            system.push_str(
+                &serde_json::to_string(&matched)
+                    .map_err(|e| AppError::InvalidApiResponse(e.to_string()))?,
+            );
+        }
+
+        let context_payload = bounded_context_payload(source_text, context);
+        let user = if context_payload.is_empty() {
+            format!("Translate from {source_lang} to {target_lang}:\n\n{source_text}")
+        } else {
+            format!(
+                "Recent confirmed context. Do not retranslate these lines:\n{}\n\nTranslate from {source_lang} to {target_lang}:\n\n{source_text}",
+                serde_json::to_string(&context_payload).unwrap_or_default()
+            )
+        };
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user }
+            ],
+            "temperature": 0,
+            "max_tokens": 256,
+            "stream": true
+        });
+
+        use futures::StreamExt;
+        let response = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let mut stream = response.bytes_stream();
+        let mut accumulated = String::new();
+        let mut line_buf = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(AppError::Http)?;
+            let text = std::str::from_utf8(&bytes).unwrap_or("");
+
+            for ch in text.chars() {
+                line_buf.push(ch);
+                if ch == '\n' {
+                    let line = line_buf.trim().to_string();
+                    line_buf.clear();
+
+                    // SSE format: "data: {...}" or "data: [DONE]"
+                    if let Some(json_str) = line.strip_prefix("data:") {
+                        let json_str = json_str.trim();
+                        if json_str == "[DONE]" {
+                            continue;
+                        }
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            if let Some(delta) = val.pointer("/choices/0/delta/content") {
+                                if let Some(token) = delta.as_str() {
+                                    if !token.is_empty() {
+                                        accumulated.push_str(token);
+                                        if let Some(tx) = &token_tx {
+                                            let _ = tx.send(token.to_string()).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut translated = clean_translation_text(&accumulated);
+        translated = enforce_glossary(&translated, &matched);
+        self.cache.put(key, translated.clone());
+        Ok(translated)
+    }
 }
 
 pub fn encode_wav(samples: &[i16], channels: u16, sample_rate: u32) -> Vec<u8> {
@@ -259,6 +397,51 @@ pub fn encode_wav(samples: &[i16], channels: u16, sample_rate: u32) -> Vec<u8> {
         out.extend_from_slice(&sample.to_le_bytes());
     }
     out
+}
+
+/// Target sample rate for ASR (Whisper expects 16 kHz).
+const ASR_TARGET_RATE: u32 = 16_000;
+
+/// Convert audio to mono and downsample for ASR.
+///
+/// - Stereo → mono: averages L+R channels (via i32 to avoid overflow).
+/// - Downsample: block-average decimation to `ASR_TARGET_RATE`.
+///
+/// Returns `(samples, channels, sample_rate)` — caller passes to `encode_wav`.
+pub fn prepare_for_asr(samples: &[i16], channels: u16, sample_rate: u32) -> (Vec<i16>, u16, u32) {
+    // Fast path: already mono 16 kHz.
+    if channels == 1 && sample_rate == ASR_TARGET_RATE {
+        return (samples.to_vec(), channels, sample_rate);
+    }
+
+    // Stereo → mono.
+    let (mono, _channels) = if channels == 2 && samples.len() >= 2 {
+        let mono: Vec<i16> = samples
+            .chunks_exact(2)
+            .map(|pair| ((pair[0] as i32 + pair[1] as i32) / 2) as i16)
+            .collect();
+        (mono, 1u16)
+    } else {
+        (samples.to_vec(), channels)
+    };
+
+    // Downsample via block-average decimation.
+    if sample_rate > ASR_TARGET_RATE && !mono.is_empty() {
+        let ratio = (sample_rate / ASR_TARGET_RATE) as usize;
+        if ratio > 1 && mono.len() >= ratio {
+            let trim_len = (mono.len() / ratio) * ratio;
+            let downsampled: Vec<i16> = mono[..trim_len]
+                .chunks_exact(ratio)
+                .map(|block| {
+                    let sum: i32 = block.iter().map(|&s| s as i32).sum();
+                    (sum / ratio as i32) as i16
+                })
+                .collect();
+            return (downsampled, 1, ASR_TARGET_RATE);
+        }
+    }
+
+    (mono, 1, sample_rate)
 }
 
 #[derive(Deserialize)]
