@@ -1,0 +1,136 @@
+/* ── Buttons ────────────────────────────────────────── */
+
+.nav-button,
+.secondary-button,
+.primary-button,
+.danger-button,
+.icon-button {
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text);
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  transition:
+    border-color var(--speed) ease,
+    background var(--speed) ease,
+    color var(--speed) ease,
+    transform var(--speed) ease,
+    box-shadow var(--speed) ease;
+}
+
+.nav-button svg,
+.secondary-button svg,
+.primary-button svg,
+.danger-button svg,
+.icon-button svg,
+.panel-heading svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+/* Nav button */
+.nav-button {
+  justify-content: flex-start;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--soft);
+  font-weight: 650;
+}
+
+.nav-button:hover {
+  background: var(--surface-inner);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.nav-button.active {
+  background: var(--accent-glow);
+  border-color: var(--accent-glow);
+  color: var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Primary button */
+.primary-button {
+  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  color: #1a1408;
+  box-shadow: 0 12px 28px var(--accent-glow);
+}
+
+/* Secondary button */
+.secondary-button {
+  background: var(--surface-inner);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* Danger button */
+.danger-button {
+  background: rgba(224, 96, 96, 0.11);
+  border-color: rgba(224, 96, 96, 0.34);
+  color: var(--danger);
+}
+
+/* Icon button */
+.icon-button {
+  width: 42px;
+  padding: 0;
+  background: var(--surface-inner);
+  border-color: var(--line);
+}
+
+/* Hover states */
+.primary-button:hover,
+.secondary-button:hover,
+.danger-button:hover,
+.icon-button:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-glow);
+  box-shadow: var(--shadow-soft);
+}
+
+.secondary-button.full {
+  width: 100%;
+}
+
+/* Segmented control */
+.segmented,
+.floating-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  background: var(--seg-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.segmented button,
+.floating-modes button {
+  min-height: 34px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 750;
+  transition:
+    background var(--speed) ease,
+    color var(--speed) ease,
+    transform var(--speed) ease;
+}
+
+.segmented button:hover,
+.floating-modes button:hover {
+  color: var(--soft);
+}
+
+.segmented button.active,
+.floating-modes button.active {
+  background: var(--seg-active-bg);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--seg-active-border);
+}

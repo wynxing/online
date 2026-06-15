@@ -1,0 +1,127 @@
+/* ── Floating Subtitles ─────────────────────────────── */
+
+.floating-shell {
+  position: relative;
+  min-height: 100vh;
+  padding: 0;
+  background: transparent;
+}
+
+html.is-floating,
+html.is-floating body {
+  background: transparent;
+}
+
+html.is-floating body::before {
+  display: none;
+}
+
+.floating-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  color: var(--soft);
+  user-select: none;
+  opacity: 0.01;
+  pointer-events: auto;
+  transition: opacity var(--speed) ease;
+  z-index: 10;
+  cursor: grab;
+}
+
+.floating-toolbar:active {
+  cursor: grabbing;
+}
+
+.floating-toolbar:hover {
+  opacity: 1;
+}
+
+.floating-toolbar .status-dot {
+  margin: 0;
+}
+
+.floating-modes {
+  margin-left: auto;
+  width: 190px;
+  background: transparent;
+  border: none;
+}
+
+.floating-modes button {
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.floating-toolbar .floating-modes button.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.floating-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--soft);
+  cursor: pointer;
+  transition: color var(--speed) ease;
+}
+
+.floating-close:hover {
+  color: var(--danger);
+}
+
+.floating-card {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  padding: 20px 28px;
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+.floating-card .subtitle-content {
+  gap: 12px;
+}
+
+.floating-card .source-text {
+  text-align: center;
+  color: rgba(240, 236, 228, 0.95);
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 0.8),
+    0 0 8px rgba(0, 0, 0, 0.6);
+}
+
+.floating-card .translated-text {
+  line-height: 1.22;
+  text-align: center;
+  text-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.9),
+    0 4px 16px rgba(0, 0, 0, 0.7),
+    0 0 32px rgba(0, 0, 0, 0.5);
+}
+
+.floating-card.corrected {
+  animation: floatingCorrectionPulse 2.1s ease;
+  border: none;
+}
+
+.floating-empty {
+  color: var(--muted);
+}

@@ -1,5 +1,16 @@
-import { Activity, BookOpen, ExternalLink, History, Settings, Wifi, WifiOff } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  BookOpen,
+  ExternalLink,
+  History,
+  Monitor,
+  Settings,
+  Sun,
+  Moon,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   createGlossaryTerm,
   deleteGlossaryTerm,
@@ -25,6 +36,10 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { NavButton } from "./components/common/NavButton";
 import { useSubtitleSocket } from "./hooks/useSubtitleSocket";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
+import { useTheme } from "./hooks/useTheme";
+import { t, detectLang, LangProvider } from "./i18n";
+import type { Lang } from "./i18n";
+import logoUrl from "./assets/brand/logo.png";
 import type {
   Device,
   GlossaryTerm,
@@ -78,12 +93,18 @@ function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[]
 export function App() {
   const isFloating = new URLSearchParams(window.location.search).get("view") === "floating";
   if (isFloating) {
-    return <FloatingSubtitles />;
+    return (
+      <LangProvider value={detectLang()}>
+        <FloatingSubtitles />
+      </LangProvider>
+    );
   }
   return <MainConsole />;
 }
 
 function MainConsole() {
+  const [lang, setLang] = useState<Lang>(detectLang);
+  const langRef = useRef(lang);
   const [tab, setTab] = useState<Tab>("console");
   const [devices, setDevices] = useState<Device[]>([]);
   const [config, setConfig] = useState<RuntimeConfig>(defaultConfig);
@@ -93,7 +114,7 @@ function MainConsole() {
   const [historySegments, setHistorySegments] = useState<SubtitleSegment[]>([]);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
-  const [notice, setNotice] = useState("Runtime initializing");
+  const [notice, setNotice] = useState(() => t("runtime.initializing", detectLang()));
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     kind: string;
@@ -122,8 +143,18 @@ function MainConsole() {
     dismiss: dismissUpdate,
   } = useUpdateChecker();
 
+  const { theme, cycleTheme } = useTheme();
+
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
   const isRunning = sessionStatus === "running";
+
+  function cycleLang() {
+    setLang((prev) => {
+      const next = prev === "zh" ? "en" : "zh";
+      window.localStorage.setItem("lang", next);
+      return next;
+    });
+  }
 
   useEffect(() => {
     void bootstrap();
@@ -132,6 +163,14 @@ function MainConsole() {
   useEffect(() => {
     window.localStorage.setItem("fontSize", String(config.fontSize));
   }, [config.fontSize]);
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -157,10 +196,10 @@ function MainConsole() {
       setDevices(runtimeDevices);
       setGlossary(runtimeGlossary);
       setSessions(runtimeSessions);
-      setNotice("Runtime ready");
+      setNotice(t("runtime.ready", langRef.current));
     } catch (error) {
       setNotice(
-        `Runtime initialization failed: ${error instanceof Error ? error.message : String(error)}`
+        `${t("runtime.initFailed", langRef.current)}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -169,12 +208,12 @@ function MainConsole() {
     const errors: string[] = [];
     const asrKey = config.asrApiKey || config.apiKey;
     const asrUrl = config.asrBaseUrl || config.baseUrl;
-    if (!asrUrl) errors.push("ASR Base URL is required");
-    if (!asrKey) errors.push("ASR API Key is required");
-    if (!config.apiKey) errors.push("Translation API Key is required");
-    if (!config.defaultInputDeviceId) errors.push("Select an audio input device");
+    if (!asrUrl) errors.push(t("validation.asrBaseUrlRequired", lang));
+    if (!asrKey) errors.push(t("validation.asrApiKeyRequired", lang));
+    if (!config.apiKey) errors.push(t("validation.translationApiKeyRequired", lang));
+    if (!config.defaultInputDeviceId) errors.push(t("validation.selectInputDevice", lang));
     if (errors.length > 0) {
-      setNotice(`Cannot start: ${errors.join("; ")}`);
+      setNotice(errors.join("; "));
       return;
     }
 
@@ -191,9 +230,11 @@ function MainConsole() {
       setErrorLog([]);
       setDiagnostics({ droppedCount: 0, lowEnergyDrops: 0 });
       setActiveSession(record);
-      setNotice("Session started");
+      setNotice(t("session.started", lang));
     } catch (error) {
-      setNotice(`Start failed: ${error instanceof Error ? error.message : String(error)}`);
+      setNotice(
+        `${t("session.startFailed", lang)}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -203,13 +244,13 @@ function MainConsole() {
       setActiveSession(result);
     }
     setSessions(await getSessions());
-    setNotice("Session stopped and saved");
+    setNotice(t("session.stoppedAndSaved", lang));
   }
 
   async function handleSaveConfig() {
     const saved = await saveConfig(config);
     setConfig(normalizeConfig(saved));
-    setNotice("Configuration saved");
+    setNotice(t("settings.saved", lang));
   }
 
   async function openFloatingWindow() {
@@ -224,7 +265,7 @@ function MainConsole() {
       }
       new WebviewWindow("floating-subtitles", {
         url: "/?view=floating",
-        title: "AI Subtitles",
+        title: t("floating.windowTitle", lang),
         width: 960,
         height: 260,
         minWidth: 520,
@@ -274,7 +315,11 @@ function MainConsole() {
     setTestResult(null);
     try {
       const res = await testAsr(config);
-      setTestResult({ kind: "asr", ok: true, message: `Connected: ${res.base_url}` });
+      setTestResult({
+        kind: "asr",
+        ok: true,
+        message: `${t("test.connected", lang)}: ${res.base_url}`,
+      });
     } catch (error) {
       setTestResult({
         kind: "asr",
@@ -294,7 +339,7 @@ function MainConsole() {
       setTestResult({
         kind: "translation",
         ok: true,
-        message: `Connected. Sample: ${res.sample}`,
+        message: `${t("test.connectedSample", lang)}: ${res.sample}`,
       });
     } catch (error) {
       setTestResult({
@@ -308,175 +353,197 @@ function MainConsole() {
   }
 
   const tabTitle: Record<Tab, string> = {
-    console: "Live interpretation",
-    settings: "Runtime and AI settings",
-    history: "Session history",
-    glossary: "Glossary",
+    console: t("tab.console", lang),
+    settings: t("tab.settings", lang),
+    history: t("tab.history", lang),
+    glossary: t("tab.glossary", lang),
   };
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">AI</span>
-          <div>
-            <strong>Interpretation Assistant</strong>
-            <span>Real-time bilingual subtitles</span>
+    <LangProvider value={lang}>
+      <div className="app-shell">
+        <aside className="sidebar">
+          <div className="brand">
+            <img className="brand-logo" src={logoUrl} alt={t("brand.title", lang)} />
+            <div>
+              <strong>{t("brand.title", lang)}</strong>
+              <span>{t("brand.subtitle", lang)}</span>
+            </div>
           </div>
-        </div>
-        <nav className="nav-list">
-          <NavButton
-            active={tab === "console"}
-            icon={<Activity />}
-            label="Console"
-            onClick={() => setTab("console")}
-          />
-          <NavButton
-            active={tab === "settings"}
-            icon={<Settings />}
-            label="Settings"
-            onClick={() => setTab("settings")}
-          />
-          <NavButton
-            active={tab === "history"}
-            icon={<History />}
-            label="History"
-            onClick={() => setTab("history")}
-          />
-          <NavButton
-            active={tab === "glossary"}
-            icon={<BookOpen />}
-            label="Glossary"
-            onClick={() => setTab("glossary")}
-          />
-        </nav>
-        <div className="runtime-card">
-          <span
-            className={`status-dot ${socketStatus === "connected" ? "connected" : socketStatus}`}
-          />
-          <div>
-            <strong>{socketStatus === "connected" ? "Runtime online" : "Runtime offline"}</strong>
-            <span>{notice}</span>
+          <nav className="nav-list">
+            <NavButton
+              active={tab === "console"}
+              icon={<Activity />}
+              label={t("nav.console", lang)}
+              onClick={() => setTab("console")}
+            />
+            <NavButton
+              active={tab === "settings"}
+              icon={<Settings />}
+              label={t("nav.settings", lang)}
+              onClick={() => setTab("settings")}
+            />
+            <NavButton
+              active={tab === "history"}
+              icon={<History />}
+              label={t("nav.history", lang)}
+              onClick={() => setTab("history")}
+            />
+            <NavButton
+              active={tab === "glossary"}
+              icon={<BookOpen />}
+              label={t("nav.glossary", lang)}
+              onClick={() => setTab("glossary")}
+            />
+          </nav>
+          <div className="runtime-card">
+            <span
+              className={`status-dot ${socketStatus === "connected" ? "connected" : socketStatus}`}
+            />
+            <div>
+              <strong>
+                {socketStatus === "connected"
+                  ? t("runtime.online", lang)
+                  : t("runtime.offline", lang)}
+              </strong>
+              <span>{notice}</span>
+            </div>
           </div>
-        </div>
-      </aside>
+        </aside>
 
-      <main className="workspace">
-        <UpdateBanner
-          status={updateStatus}
-          updateInfo={updateInfo}
-          progress={updateProgress}
-          error={updateError}
-          onUpdate={() => void downloadAndInstall()}
-          onDismiss={dismissUpdate}
-        />
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">EN TO ZH-CN</span>
-            <h1>{tabTitle[tab]}</h1>
-          </div>
-          <div className="topbar-actions">
-            <button
-              className="icon-button"
-              onClick={() => void bootstrap()}
-              title="Refresh runtime"
-            >
-              {socketStatus === "connected" ? <Wifi /> : <WifiOff />}
-            </button>
-            <button className="secondary-button" onClick={() => void openFloatingWindow()}>
-              <ExternalLink />
-              Floating subtitles
-            </button>
-          </div>
-        </header>
+        <main className="workspace">
+          <UpdateBanner
+            status={updateStatus}
+            updateInfo={updateInfo}
+            progress={updateProgress}
+            error={updateError}
+            onUpdate={() => void downloadAndInstall()}
+            onDismiss={dismissUpdate}
+          />
+          <header className="topbar">
+            <div>
+              <span className="eyebrow">{t("brand.sourceToTarget", lang)}</span>
+              <h1>{tabTitle[tab]}</h1>
+            </div>
+            <div className="topbar-actions">
+              <button
+                className="icon-button"
+                onClick={cycleLang}
+                title={lang === "zh" ? "EN" : "中文"}
+                aria-label={lang === "zh" ? "Switch to English" : "切换到中文"}
+              >
+                {lang === "zh" ? "EN" : "中"}
+              </button>
+              <button
+                className="icon-button"
+                onClick={cycleTheme}
+                title={t(`theme.${theme}`, lang)}
+                aria-label={t(`theme.${theme}`, lang)}
+              >
+                {theme === "light" ? <Sun /> : theme === "dark" ? <Moon /> : <Monitor />}
+              </button>
+              <button
+                className="icon-button"
+                onClick={() => void bootstrap()}
+                title={t("runtime.refresh", lang)}
+              >
+                {socketStatus === "connected" ? <Wifi /> : <WifiOff />}
+              </button>
+              <button className="secondary-button" onClick={() => void openFloatingWindow()}>
+                <ExternalLink />
+                {t("floating.openButton", lang)}
+              </button>
+            </div>
+          </header>
 
-        {tab === "console" && (
-          <section className="console-grid">
-            <ControlPanel
+          {tab === "console" && (
+            <section className="console-grid">
+              <ControlPanel
+                config={config}
+                setConfig={setConfig}
+                devices={devices}
+                isRunning={isRunning}
+                onStart={() => void handleStart()}
+                onStop={() => void handleStop()}
+                onClear={() => setSegments([])}
+              />
+              <SubtitlePanel
+                segments={segments}
+                displayMode={config.displayMode}
+                correctedIds={correctedIds}
+                sessionStatus={sessionStatus}
+                activeSessionTitle={activeSession?.title}
+                isRunning={isRunning}
+                asrProvider={config.asrProvider}
+                diagnostics={diagnostics}
+                diagnosticsEnabled={config.diagnosticsEnabled}
+                errorLog={errorLog}
+                fontSize={config.fontSize}
+              />
+              <div className="latest-panel">
+                <span className="eyebrow">{t("subtitle.latestStable", lang)}</span>
+                {visibleSegments.length > 0 ? (
+                  (() => {
+                    const latest =
+                      [...visibleSegments].reverse().find((s) => s.status !== "interim") ??
+                      visibleSegments[visibleSegments.length - 1];
+                    return (
+                      <>
+                        <p
+                          className="latest-source"
+                          style={{ fontSize: `${config.fontSize * 0.75}px` }}
+                        >
+                          {latest.sourceText}
+                        </p>
+                        <p
+                          className="latest-translation"
+                          style={{ fontSize: `${config.fontSize}px` }}
+                        >
+                          {latest.translatedText}
+                        </p>
+                      </>
+                    );
+                  })()
+                ) : (
+                  <p className="latest-placeholder">{t("subtitle.noStableSubtitles", lang)}</p>
+                )}
+              </div>
+            </section>
+          )}
+
+          {tab === "settings" && (
+            <SettingsPanel
               config={config}
               setConfig={setConfig}
-              devices={devices}
-              isRunning={isRunning}
-              onStart={() => void handleStart()}
-              onStop={() => void handleStop()}
-              onClear={() => setSegments([])}
+              testing={testing}
+              testResult={testResult}
+              onTestAsr={() => void handleTestAsr()}
+              onTestTranslation={() => void handleTestTranslation()}
+              onSave={() => void handleSaveConfig()}
             />
-            <SubtitlePanel
-              segments={segments}
-              displayMode={config.displayMode}
-              correctedIds={correctedIds}
-              sessionStatus={sessionStatus}
-              activeSessionTitle={activeSession?.title}
-              isRunning={isRunning}
-              asrProvider={config.asrProvider}
-              diagnostics={diagnostics}
-              diagnosticsEnabled={config.diagnosticsEnabled}
-              errorLog={errorLog}
-              fontSize={config.fontSize}
+          )}
+
+          {tab === "history" && (
+            <HistoryPanel
+              sessions={sessions}
+              selectedSessionId={selectedSessionId}
+              historySegments={historySegments}
+              onSelectSession={(id) => void loadHistory(id)}
             />
-            <div className="latest-panel">
-              <span className="eyebrow">Latest stable</span>
-              {visibleSegments.length > 0 ? (
-                (() => {
-                  const latest =
-                    [...visibleSegments].reverse().find((s) => s.status !== "interim") ??
-                    visibleSegments[visibleSegments.length - 1];
-                  return (
-                    <>
-                      <p
-                        className="latest-source"
-                        style={{ fontSize: `${config.fontSize * 0.75}px` }}
-                      >
-                        {latest.sourceText}
-                      </p>
-                      <p
-                        className="latest-translation"
-                        style={{ fontSize: `${config.fontSize}px` }}
-                      >
-                        {latest.translatedText}
-                      </p>
-                    </>
-                  );
-                })()
-              ) : (
-                <p className="latest-placeholder">No stable subtitles yet.</p>
-              )}
-            </div>
-          </section>
-        )}
+          )}
 
-        {tab === "settings" && (
-          <SettingsPanel
-            config={config}
-            setConfig={setConfig}
-            testing={testing}
-            testResult={testResult}
-            onTestAsr={() => void handleTestAsr()}
-            onTestTranslation={() => void handleTestTranslation()}
-            onSave={() => void handleSaveConfig()}
-          />
-        )}
-
-        {tab === "history" && (
-          <HistoryPanel
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            historySegments={historySegments}
-            onSelectSession={(id) => void loadHistory(id)}
-          />
-        )}
-
-        {tab === "glossary" && (
-          <GlossaryPanel
-            glossary={glossary}
-            newTerm={newTerm}
-            setNewTerm={setNewTerm}
-            onAdd={(event) => void addGlossaryTerm(event)}
-            onToggle={(term) => void toggleGlossary(term)}
-            onRemove={(id) => void removeGlossaryTerm(id)}
-          />
-        )}
-      </main>
-    </div>
+          {tab === "glossary" && (
+            <GlossaryPanel
+              glossary={glossary}
+              newTerm={newTerm}
+              setNewTerm={setNewTerm}
+              onAdd={(event) => void addGlossaryTerm(event)}
+              onToggle={(term) => void toggleGlossary(term)}
+              onRemove={(id) => void removeGlossaryTerm(id)}
+            />
+          )}
+        </main>
+      </div>
+    </LangProvider>
   );
 }

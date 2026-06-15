@@ -1,4 +1,5 @@
 import { Save, SlidersHorizontal } from "lucide-react";
+import { t, useLang } from "../i18n";
 import type { RuntimeConfig } from "../types";
 
 interface SettingsPanelProps {
@@ -20,6 +21,7 @@ export function SettingsPanel({
   onTestTranslation,
   onSave,
 }: SettingsPanelProps) {
+  const lang = useLang();
   function updateConfigNumber(key: keyof RuntimeConfig, value: string) {
     setConfig({ ...config, [key]: Number(value) });
   }
@@ -29,84 +31,84 @@ export function SettingsPanel({
       <div className="form-panel">
         <div className="panel-heading">
           <div>
-            <span className="eyebrow">ASR</span>
-            <h2>Speech recognition</h2>
+            <span className="eyebrow">{t("settings.asrSection", lang)}</span>
+            <h2>{t("settings.speechRecognition", lang)}</h2>
           </div>
           <SlidersHorizontal />
         </div>
         <label className="field">
-          <span>API format</span>
+          <span>{t("settings.apiFormat", lang)}</span>
           <select
             value={config.asrFormat}
             onChange={(event) => setConfig({ ...config, asrFormat: event.target.value })}
           >
-            <option value="whisper">Standard ASR (/v1/audio/transcriptions)</option>
-            <option value="chat-completions">Chat Completions (/v1/chat/completions)</option>
+            <option value="whisper">{t("settings.asrFormatWhisper", lang)}</option>
+            <option value="chat-completions">{t("settings.asrFormatChat", lang)}</option>
           </select>
         </label>
         <div className="device-note">
           {config.asrFormat === "whisper"
-            ? "Uploads audio as a file to a Whisper-compatible transcription endpoint."
-            : "Sends base64 audio to a Chat Completions-compatible endpoint."}
+            ? t("settings.asrFormatWhisperHint", lang)
+            : t("settings.asrFormatChatHint", lang)}
         </div>
         <label className="field">
-          <span>ASR Base URL</span>
+          <span>{t("settings.asrBaseUrl", lang)}</span>
           <input
             value={config.asrBaseUrl}
-            placeholder="Leave blank to use translation Base URL"
+            placeholder={t("settings.asrBaseUrlPlaceholder", lang)}
             onChange={(event) => setConfig({ ...config, asrBaseUrl: event.target.value })}
           />
         </label>
-        <div className="device-note">The URL usually includes a /v1 suffix.</div>
+        <div className="device-note">{t("settings.urlV1Hint", lang)}</div>
         <label className="field">
-          <span>ASR API Key</span>
+          <span>{t("settings.asrApiKey", lang)}</span>
           <input
             type="password"
             value={config.asrApiKey}
-            placeholder="Leave blank to use translation API Key"
+            placeholder={t("settings.asrApiKeyPlaceholder", lang)}
             onChange={(event) => setConfig({ ...config, asrApiKey: event.target.value })}
           />
         </label>
         <label className="field">
-          <span>ASR model</span>
+          <span>{t("settings.asrModel", lang)}</span>
           <input
             value={config.asrModel}
             onChange={(event) => setConfig({ ...config, asrModel: event.target.value })}
           />
         </label>
         <label className="field">
-          <span>Recognition language</span>
+          <span>{t("settings.recognitionLanguage", lang)}</span>
           <input
             value={config.asrLanguage}
-            placeholder="en / zh / auto"
+            placeholder={t("settings.asrLanguagePlaceholder", lang)}
             onChange={(event) => setConfig({ ...config, asrLanguage: event.target.value })}
           />
         </label>
         <button className="secondary-button" disabled={testing !== null} onClick={onTestAsr}>
-          {testing === "asr" ? "Testing..." : "Test ASR connection"}
+          {testing === "asr" ? t("common.testing", lang) : t("settings.testAsr", lang)}
         </button>
         {testResult?.kind === "asr" && (
           <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
-            {testResult.ok ? "OK" : "Failed"}: {testResult.message}
+            {testResult.ok ? t("common.ok", lang) : t("common.failed", lang)}: {testResult.message}
           </div>
         )}
 
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
-            <span className="eyebrow">Translation</span>
-            <h2>Translation service</h2>
+            <span className="eyebrow">{t("settings.translationSection", lang)}</span>
+            <h2>{t("settings.translationService", lang)}</h2>
           </div>
           <SlidersHorizontal />
         </div>
         <label className="field">
-          <span>Base URL</span>
+          <span>{t("settings.baseUrl", lang)}</span>
           <input
             value={config.baseUrl}
             onChange={(event) => setConfig({ ...config, baseUrl: event.target.value })}
           />
         </label>
         <label className="field">
-          <span>API Key</span>
+          <span>{t("settings.apiKey", lang)}</span>
           <input
             type="password"
             value={config.apiKey}
@@ -114,7 +116,7 @@ export function SettingsPanel({
           />
         </label>
         <label className="field">
-          <span>Translation model</span>
+          <span>{t("settings.translationModel", lang)}</span>
           <input
             value={config.translationModel}
             onChange={(event) => setConfig({ ...config, translationModel: event.target.value })}
@@ -122,18 +124,18 @@ export function SettingsPanel({
         </label>
         <div className="settings-columns">
           <label className="field">
-            <span>Source language</span>
+            <span>{t("settings.sourceLanguage", lang)}</span>
             <input
               value={config.sourceLang}
-              placeholder="en"
+              placeholder={t("settings.sourceLanguagePlaceholder", lang)}
               onChange={(event) => setConfig({ ...config, sourceLang: event.target.value })}
             />
           </label>
           <label className="field">
-            <span>Target language</span>
+            <span>{t("settings.targetLanguage", lang)}</span>
             <input
               value={config.targetLang}
-              placeholder="zh-CN"
+              placeholder={t("settings.targetLanguagePlaceholder", lang)}
               onChange={(event) => setConfig({ ...config, targetLang: event.target.value })}
             />
           </label>
@@ -143,24 +145,26 @@ export function SettingsPanel({
           disabled={testing !== null}
           onClick={onTestTranslation}
         >
-          {testing === "translation" ? "Testing..." : "Test translation connection"}
+          {testing === "translation"
+            ? t("common.testing", lang)
+            : t("settings.testTranslation", lang)}
         </button>
         {testResult?.kind === "translation" && (
           <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}>
-            {testResult.ok ? "OK" : "Failed"}: {testResult.message}
+            {testResult.ok ? t("common.ok", lang) : t("common.failed", lang)}: {testResult.message}
           </div>
         )}
 
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
-            <span className="eyebrow">Performance</span>
-            <h2>Realtime pipeline</h2>
+            <span className="eyebrow">{t("settings.performanceSection", lang)}</span>
+            <h2>{t("settings.realtimePipeline", lang)}</h2>
           </div>
           <SlidersHorizontal />
         </div>
         <div className="settings-columns">
           <label className="field">
-            <span>Min segment seconds</span>
+            <span>{t("settings.minSegmentSeconds", lang)}</span>
             <input
               type="number"
               min="0.4"
@@ -171,7 +175,7 @@ export function SettingsPanel({
             />
           </label>
           <label className="field">
-            <span>Max segment seconds</span>
+            <span>{t("settings.maxSegmentSeconds", lang)}</span>
             <input
               type="number"
               min="0.8"
@@ -182,7 +186,7 @@ export function SettingsPanel({
             />
           </label>
           <label className="field">
-            <span>Silence split seconds</span>
+            <span>{t("settings.silenceSplitSeconds", lang)}</span>
             <input
               type="number"
               min="0.1"
@@ -193,15 +197,39 @@ export function SettingsPanel({
             />
           </label>
         </div>
+        <div className="settings-columns">
+          <label className="field">
+            <span>{t("settings.asrConcurrency", lang)}</span>
+            <input
+              type="number"
+              min="1"
+              max="8"
+              step="1"
+              value={config.asrConcurrency}
+              onChange={(event) => updateConfigNumber("asrConcurrency", event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>{t("settings.translationConcurrency", lang)}</span>
+            <input
+              type="number"
+              min="1"
+              max="8"
+              step="1"
+              value={config.translationConcurrency}
+              onChange={(event) => updateConfigNumber("translationConcurrency", event.target.value)}
+            />
+          </label>
+        </div>
 
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
-            <span className="eyebrow">Display</span>
-            <h2>Subtitle display</h2>
+            <span className="eyebrow">{t("settings.displaySection", lang)}</span>
+            <h2>{t("settings.subtitleDisplay", lang)}</h2>
           </div>
         </div>
         <label className="field">
-          <span>Subtitle font size</span>
+          <span>{t("settings.subtitleFontSize", lang)}</span>
           <input
             type="range"
             min="14"
@@ -216,7 +244,7 @@ export function SettingsPanel({
             checked={config.glossaryEnabled}
             onChange={(event) => setConfig({ ...config, glossaryEnabled: event.target.checked })}
           />
-          <span>Use glossary during translation</span>
+          <span>{t("settings.useGlossary", lang)}</span>
         </label>
         <label className="toggle-row">
           <input
@@ -224,18 +252,18 @@ export function SettingsPanel({
             checked={config.diagnosticsEnabled}
             onChange={(event) => setConfig({ ...config, diagnosticsEnabled: event.target.checked })}
           />
-          <span>Show realtime diagnostics</span>
+          <span>{t("settings.showDiagnostics", lang)}</span>
         </label>
         <button className="primary-button" onClick={onSave}>
           <Save />
-          Save configuration
+          {t("settings.saveConfig", lang)}
         </button>
       </div>
       <div className="preview-panel">
-        <span className="eyebrow">Subtitle Preview</span>
+        <span className="eyebrow">{t("settings.subtitlePreview", lang)}</span>
         <div className="subtitle-preview" style={{ fontSize: config.fontSize }}>
-          <span>We use caching to reduce latency.</span>
-          <strong>Translation preview text</strong>
+          <span>{t("settings.previewSource", lang)}</span>
+          <strong>{t("settings.previewTranslation", lang)}</strong>
         </div>
       </div>
     </section>

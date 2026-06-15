@@ -1,6 +1,7 @@
 import { Captions } from "lucide-react";
 import { useRef, useEffect, useMemo } from "react";
 import type { DisplayMode, PipelineDiagnostics, SubtitleSegment } from "../types";
+import { t, useLang } from "../i18n";
 import { DiagnosticsStrip } from "./DiagnosticsStrip";
 import { SubtitleRow } from "./SubtitleRow";
 import { EmptyState } from "./common/EmptyState";
@@ -37,6 +38,7 @@ export function SubtitlePanel({
   errorLog,
   fontSize,
 }: SubtitlePanelProps) {
+  const lang = useLang();
   const subtitlePaneRef = useRef<HTMLDivElement>(null);
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
 
@@ -51,16 +53,29 @@ export function SubtitlePanel({
     <div className="subtitle-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Live Stream</span>
-          <h2>实时字幕</h2>
+          <span className="eyebrow">{t("subtitlePanel.liveStream", lang)}</span>
+          <h2>{t("subtitlePanel.title", lang)}</h2>
         </div>
         <Captions />
       </div>
       <div className="session-strip">
-        <StatusPill label="会话" value={activeSessionTitle ?? "未启动"} />
-        <StatusPill label="状态" value={sessionStatus} />
-        <StatusPill label="段数" value={String(visibleSegments.length)} />
-        <StatusPill label="模式" value={asrProvider === "mock" ? "Mock" : "真实"} />
+        <StatusPill
+          label={t("subtitlePanel.session", lang)}
+          value={activeSessionTitle ?? t("subtitlePanel.sessionNotStarted", lang)}
+        />
+        <StatusPill label={t("subtitlePanel.status", lang)} value={sessionStatus} />
+        <StatusPill
+          label={t("subtitlePanel.segmentCount", lang)}
+          value={String(visibleSegments.length)}
+        />
+        <StatusPill
+          label={t("subtitlePanel.mode", lang)}
+          value={
+            asrProvider === "mock"
+              ? t("subtitlePanel.modeMock", lang)
+              : t("subtitlePanel.modeReal", lang)
+          }
+        />
       </div>
       {diagnosticsEnabled && <DiagnosticsStrip diagnostics={diagnostics} />}
       {errorLog.length > 0 && (
@@ -76,7 +91,10 @@ export function SubtitlePanel({
       )}
       <div className="subtitle-list" ref={subtitlePaneRef}>
         {visibleSegments.length === 0 ? (
-          <EmptyState title="等待字幕流" body="启动会话后，这里会显示实时识别、翻译和修正事件。" />
+          <EmptyState
+            title={t("subtitlePanel.emptyTitle", lang)}
+            body={t("subtitlePanel.emptyBody", lang)}
+          />
         ) : (
           visibleSegments.map((segment) => (
             <SubtitleRow

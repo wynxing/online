@@ -1,0 +1,40 @@
+/* ── Animations ─────────────────────────────────────── */
+
+@keyframes statusPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.22);
+  }
+}
+
+@keyframes subtitleIn {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes correctionPulse {
+  0% {
+    background-color: rgba(229, 168, 83, 0.22);
+  }
+  100% {
+    background-color: var(--surface-inner);
+  }
+}
+
+@keyframes floatingCorrectionPulse {
+  0% {
+    border-color: rgba(229, 168, 83, 0.8);
+  }
+  100% {
+    border-color: var(--accent-glow);
+  }
+}

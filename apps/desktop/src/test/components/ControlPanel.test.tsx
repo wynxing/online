@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ControlPanel } from "../../components/ControlPanel";
+import { withLang } from "../helpers";
 import type { Device, RuntimeConfig } from "../../types";
 
 const defaultConfig: RuntimeConfig = {
@@ -52,7 +53,7 @@ function renderControlPanel(overrides = {}) {
     onClear: vi.fn(),
     ...overrides,
   };
-  return { ...render(<ControlPanel {...defaultProps} />), props: defaultProps };
+  return { ...render(withLang(<ControlPanel {...defaultProps} />)), props: defaultProps };
 }
 
 describe("ControlPanel", () => {
