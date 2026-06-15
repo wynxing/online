@@ -1,5 +1,9 @@
 # AI Interpretation Assistant
 
+<p align="center">
+  <img src="docs/assets/logo.png" alt="AI Interpretation Assistant logo" width="160" />
+</p>
+
 Desktop app for real-time bilingual subtitles. The app captures local audio, sends segments to OpenAI-compatible ASR and translation APIs, and renders live subtitles in the main console or a floating window.
 
 ## Stack

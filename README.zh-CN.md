@@ -1,5 +1,9 @@
 # AI 同传助手
 
+<p align="center">
+  <img src="docs/assets/logo.png" alt="AI 同传助手 logo" width="160" />
+</p>
+
 实时双语字幕桌面应用。应用捕获本地音频，将音频片段发送至兼容 OpenAI 的 ASR 和翻译 API，并在主控制台或悬浮窗口中实时渲染字幕。
 
 ## 技术栈
