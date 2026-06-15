@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, LazyLock, Mutex,
     },
     time::Instant,
@@ -39,6 +39,11 @@ const ASR_STALE_SECS: f32 = 12.0;
 /// Segments waiting longer than this in the translation input queue are dropped.
 const TRANSLATION_STALE_SECS: f32 = 10.0;
 
+/// Maximum wait for a missing sequence number before skipping (aligns with Python
+/// TRANSLATION_REORDER_WAIT_SECONDS = 1.2s). The previous 100 ms was too aggressive
+/// and caused incorrect skips when ASR workers completed out of order.
+const REORDER_WAIT_MS: u64 = 1200;
+
 /// How often the signal monitor checks for audio activity.
 const SIGNAL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -69,7 +74,7 @@ fn is_sentence_complete(source_text: &str) -> bool {
     if RE_SENTENCE_END.is_match(text) {
         return true;
     }
-    text.len() > 80 && RE_LONG_SEGMENT_BOUNDARY.is_match(text)
+    text.chars().count() > 80 && RE_LONG_SEGMENT_BOUNDARY.is_match(text)
 }
 
 fn split_first_sentence(source_text: &str) -> (Option<String>, String) {
@@ -81,7 +86,7 @@ fn split_first_sentence(source_text: &str) -> (Option<String>, String) {
             text[end..].trim().to_string(),
         );
     }
-    if text.len() > 80 {
+    if text.chars().count() > 80 {
         if let Some(m) = RE_LONG_SEGMENT_BOUNDARY.find(text) {
             let end = m.end();
             return (
@@ -127,7 +132,7 @@ impl PipelineManager {
     }
 
     pub fn is_running(&self) -> bool {
-        self.inner.lock().unwrap().is_some()
+        self.inner.lock().ok().map_or(false, |g| g.is_some())
     }
 
     pub fn start(
@@ -168,7 +173,7 @@ impl PipelineManager {
             let _ = cleanup_storage
                 .finish_session(cleanup_session_id.clone(), now_iso())
                 .await;
-            let mut guard = inner.lock().unwrap();
+            let Ok(mut guard) = inner.lock() else { return };
             if guard
                 .as_ref()
                 .map(|active| active.session_id == cleanup_session_id)
@@ -177,16 +182,18 @@ impl PipelineManager {
                 *guard = None;
             }
         });
-        *self.inner.lock().unwrap() = Some(ActivePipeline {
-            session_id: active_session_id,
-            cancel,
-            handle,
-        });
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Some(ActivePipeline {
+                session_id: active_session_id,
+                cancel,
+                handle,
+            });
+        }
         Ok(())
     }
 
     pub async fn stop(&self) -> Option<String> {
-        let active = self.inner.lock().unwrap().take();
+        let active = self.inner.lock().ok().and_then(|mut g| g.take());
         if let Some(active) = active {
             active.cancel.cancel();
             let _ = active.handle.await;
@@ -196,7 +203,7 @@ impl PipelineManager {
     }
 
     pub fn blocking_stop(&self) {
-        if let Some(active) = self.inner.lock().unwrap().take() {
+        if let Some(active) = self.inner.lock().ok().and_then(|mut g| g.take()) {
             active.cancel.cancel();
             // Do NOT abort: let the CancellationToken propagate so the
             // cleanup code in the spawned task (finish_session, clearing
@@ -213,11 +220,20 @@ impl PipelineManager {
                 return;
             };
             let handle = active.handle;
-            std::thread::spawn(move || {
+            let abort_handle = handle.abort_handle();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
                 let _ = rt.block_on(handle);
-            })
-            .join()
-            .ok();
+                let _ = tx.send(());
+            });
+            if rx.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
+                // Pipeline didn't finish in time — abort to let app exit
+                tracing::warn!("blocking_stop: pipeline did not finish within 5s, aborting");
+                abort_handle.abort();
+            }
+            // Always join the worker thread to guarantee cleanup.
+            // After abort, block_on returns immediately with JoinError.
+            let _ = worker.join();
         }
     }
 }
@@ -251,6 +267,8 @@ async fn run_pipeline(
 
     let frame_counter = Arc::new(AtomicU64::new(0));
     let segment_counter = Arc::new(AtomicU64::new(0));
+    let segment_queue_depth = Arc::new(AtomicUsize::new(0));
+    let translation_queue_depth = Arc::new(AtomicUsize::new(0));
 
     let segmenter = tokio::spawn(segmenter_task(
         audio_rx,
@@ -261,6 +279,7 @@ async fn run_pipeline(
         session_id.clone(),
         frame_counter.clone(),
         segment_counter.clone(),
+        segment_queue_depth.clone(),
     ));
     let asr = tokio::spawn(asr_task(
         segment_rx,
@@ -270,6 +289,7 @@ async fn run_pipeline(
         token.clone(),
         app.clone(),
         session_id.clone(),
+        segment_queue_depth.clone(),
     ));
 
     let (reorder_tx, reorder_rx) = mpsc::channel::<TranslatedSegment>(32);
@@ -284,6 +304,7 @@ async fn run_pipeline(
         glossary.clone(),
         token.clone(),
         app.clone(),
+        translation_queue_depth.clone(),
     ));
     let reorder = tokio::spawn(reorder_task(
         reorder_rx,
@@ -356,6 +377,7 @@ async fn segmenter_task(
     session_id: String,
     frame_counter: Arc<AtomicU64>,
     segment_counter: Arc<AtomicU64>,
+    segment_queue_depth: Arc<AtomicUsize>,
 ) {
     let mut sample_rate = 48_000;
     let mut channels = 1;
@@ -442,6 +464,7 @@ async fn segmenter_task(
                     };
                     segment_start = stream_time;
                     segment_counter.fetch_add(1, Ordering::Relaxed);
+                    segment_queue_depth.fetch_add(1, Ordering::Relaxed);
                     if tx.send(segment).await.is_err() {
                         break;
                     }
@@ -453,6 +476,7 @@ async fn segmenter_task(
     // Flush remaining buffer as a final segment on pipeline end.
     if !buffer.is_empty() {
         index += 1;
+        segment_queue_depth.fetch_add(1, Ordering::Relaxed);
         let _ = tx
             .send(AudioSegment {
                 id: format!("seg_{index:06}"),
@@ -467,6 +491,7 @@ async fn segmenter_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn asr_task(
     mut rx: mpsc::Receiver<AudioSegment>,
     tx: mpsc::Sender<RecognizedSegment>,
@@ -475,12 +500,15 @@ async fn asr_task(
     token: CancellationToken,
     app: AppHandle,
     session_id: String,
+    segment_queue_depth: Arc<AtomicUsize>,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let recent_source: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let worker_id_counter = Arc::new(AtomicU64::new(0));
+    let consecutive_empty = Arc::new(AtomicU32::new(0));
 
     while let Some(segment) = rx.recv().await {
+        let _ = segment_queue_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
         if token.is_cancelled() {
             break;
         }
@@ -504,6 +532,8 @@ async fn asr_task(
         let app = app.clone();
         let session_id = session_id.clone();
         let recent_source = recent_source.clone();
+        let consecutive_empty = consecutive_empty.clone();
+        let segment_queue_depth = segment_queue_depth.clone();
         let worker_id = worker_id_counter.fetch_add(1, Ordering::Relaxed);
 
         tokio::spawn(async move {
@@ -515,6 +545,7 @@ async fn asr_task(
             let prompt = recent_source.lock().unwrap().clone();
             match asr.transcribe(wav, prompt.as_deref()).await {
                 Ok(source_text) if !source_text.is_empty() => {
+                    consecutive_empty.store(0, Ordering::Relaxed);
                     let asr_ms = started.elapsed().as_secs_f32() * 1000.0;
                     let interim = SubtitleSegment {
                         id: segment.id.clone(),
@@ -549,7 +580,7 @@ async fn asr_task(
                             translation_duration_ms: None,
                             end_to_end_ms: None,
                             queue_lag_ms: Some(queue_lag_ms),
-                            segment_queue_size: None,
+                            segment_queue_size: Some(segment_queue_depth.load(Ordering::Relaxed)),
                             translation_queue_size: None,
                             frames: None,
                             segments: None,
@@ -573,7 +604,21 @@ async fn asr_task(
                         })
                         .await;
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                    // Empty ASR result — track consecutive empties and warn user.
+                    let count = consecutive_empty.fetch_add(1, Ordering::Relaxed) + 1;
+                    if count >= 3 {
+                        if !token.is_cancelled() {
+                            emit_error(
+                                &app,
+                                "ASR_EMPTY",
+                                "连续收到空的语音识别结果。请检查：1) 系统音频回环设备是否正确 2) 音频语言设置 3) 播放音量 4) ASR 模型配置",
+                                true,
+                            );
+                        }
+                        consecutive_empty.store(0, Ordering::Relaxed);
+                    }
+                }
                 Err(error) => {
                     if !token.is_cancelled() {
                         emit_error(&app, "ASR_FAILED", &error.to_string(), true);
@@ -599,6 +644,38 @@ struct TranslatedSegment {
     translation_ms: f32,
 }
 
+struct QueueDepthGuard {
+    depth: Arc<AtomicUsize>,
+    active: bool,
+}
+
+impl QueueDepthGuard {
+    fn new(depth: Arc<AtomicUsize>) -> Self {
+        depth.fetch_add(1, Ordering::Relaxed);
+        Self {
+            depth,
+            active: true,
+        }
+    }
+
+    fn release(mut self) -> usize {
+        self.active = false;
+        self.depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1))
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for QueueDepthGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self
+                .depth
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
+        }
+    }
+}
+
 /// Extract monotonic sequence number from segment ID (format: `seg_NNNNNN`).
 fn extract_sequence(id: &str) -> u64 {
     id.strip_prefix("seg_")
@@ -619,9 +696,10 @@ async fn translation_dispatcher(
     glossary: Vec<GlossaryTerm>,
     token: CancellationToken,
     app: AppHandle,
+    translation_queue_depth: Arc<AtomicUsize>,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let translation = Arc::new(tokio::sync::Mutex::new(translation));
+    let translation = Arc::new(translation);
     let glossary = Arc::new(glossary);
     let worker_id_counter = Arc::new(AtomicU64::new(0));
 
@@ -649,10 +727,12 @@ async fn translation_dispatcher(
         }
 
         let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let queue_guard = QueueDepthGuard::new(translation_queue_depth.clone());
         let translation = translation.clone();
         let reorder_tx = reorder_tx.clone();
         let token = token.clone();
         let app = app.clone();
+        let session_id = session_id.clone();
         let source_lang = source_lang.clone();
         let target_lang = target_lang.clone();
         let glossary = glossary.clone();
@@ -680,8 +760,7 @@ async fn translation_dispatcher(
             });
 
             // Workers translate without context — context is maintained by reorder_task.
-            let mut client = translation.lock().await;
-            let result = client
+            let result = translation
                 .translate_streaming(
                     &segment.source_text,
                     &source_lang,
@@ -691,12 +770,13 @@ async fn translation_dispatcher(
                     Some(token_tx),
                 )
                 .await;
-            drop(client);
             let _ = emitter.await;
 
             match result {
                 Ok(translated_text) => {
                     let translation_ms = started.elapsed().as_secs_f32() * 1000.0;
+                    let queue_size = queue_guard.release();
+                    emit_queue_metrics(&app, &session_id, queue_size);
                     let _ = reorder_tx
                         .send(TranslatedSegment {
                             seq,
@@ -707,6 +787,8 @@ async fn translation_dispatcher(
                         .await;
                 }
                 Err(error) => {
+                    let queue_size = queue_guard.release();
+                    emit_queue_metrics(&app, &session_id, queue_size);
                     if !token.is_cancelled() {
                         emit_error(&app, "TRANSLATION_FAILED", &error.to_string(), true);
                     }
@@ -722,7 +804,7 @@ async fn translation_dispatcher(
 #[allow(clippy::too_many_arguments)]
 async fn reorder_task(
     mut rx: mpsc::Receiver<TranslatedSegment>,
-    mut translation: TranslationClient,
+    translation: TranslationClient,
     session_id: String,
     source_lang: String,
     target_lang: String,
@@ -760,7 +842,7 @@ async fn reorder_task(
                 &target_lang,
                 &glossary,
                 &mut context,
-                &mut translation,
+                &translation,
                 &app,
                 &storage,
             )
@@ -790,7 +872,7 @@ async fn reorder_task(
                         None => break,
                     }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(REORDER_WAIT_MS)) => {
                     // Timeout — skip missing seq to avoid stalling.
                     if let Some((&skipped, _)) = pending.iter().next() {
                         tracing::warn!(
@@ -809,7 +891,7 @@ async fn reorder_task(
     if let Some(tail) = open_tail.take() {
         flush_open_tail(
             tail,
-            &mut translation,
+            &translation,
             &session_id,
             &source_lang,
             &target_lang,
@@ -835,7 +917,7 @@ async fn emit_translated_segment(
     target_lang: &str,
     glossary: &[GlossaryTerm],
     context: &mut Vec<(String, String)>,
-    translation: &mut TranslationClient,
+    translation: &TranslationClient,
     app: &AppHandle,
     storage: &Storage,
 ) {
@@ -933,7 +1015,7 @@ async fn emit_translated_segment(
 #[allow(clippy::too_many_arguments)]
 async fn flush_open_tail(
     tail: OpenTail,
-    translation: &mut TranslationClient,
+    translation: &TranslationClient,
     session_id: &str,
     source_lang: &str,
     target_lang: &str,
@@ -1003,6 +1085,39 @@ fn emit_translation_metrics(
             queue_lag_ms: None,
             segment_queue_size: None,
             translation_queue_size: None,
+            frames: None,
+            segments: None,
+            low_energy_drops: None,
+            last_frame_rms: None,
+            max_frame_rms: None,
+            last_segment_rms: None,
+            max_segment_rms: None,
+            error: None,
+        },
+    );
+}
+
+fn emit_queue_metrics(app: &AppHandle, session_id: &str, translation_queue_size: usize) {
+    emit_metrics(
+        app,
+        PipelineMetricsPayload {
+            session_id: Some(session_id.to_string()),
+            segment_id: None,
+            stage: "queue".into(),
+            status: "stats".into(),
+            updated_at: Some(now_iso()),
+            drop_reason: None,
+            dropped_count: None,
+            worker_id: None,
+            audio_start: None,
+            audio_end: None,
+            audio_duration_ms: None,
+            asr_duration_ms: None,
+            translation_duration_ms: None,
+            end_to_end_ms: None,
+            queue_lag_ms: None,
+            segment_queue_size: None,
+            translation_queue_size: Some(translation_queue_size),
             frames: None,
             segments: None,
             low_energy_drops: None,

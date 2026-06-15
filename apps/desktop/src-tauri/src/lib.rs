@@ -1,11 +1,11 @@
-mod api;
-mod audio;
+pub mod api;
+pub mod audio;
 mod commands;
-mod error;
-mod models;
-mod pipeline;
+pub mod error;
+pub mod models;
+pub mod pipeline;
 mod state;
-mod storage;
+pub mod storage;
 
 use commands::{
     create_glossary, delete_glossary, get_config, get_segments, health_check, list_devices,

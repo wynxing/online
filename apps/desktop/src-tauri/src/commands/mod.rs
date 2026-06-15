@@ -198,7 +198,7 @@ pub async fn test_translation(
         ..RuntimeConfig::default()
     }
     .normalized();
-    let mut client = TranslationClient::from_config(&config);
+    let client = TranslationClient::from_config(&config);
     let sample = client.test().await.map_err(to_string)?;
     Ok(serde_json::json!({
         "ok": true,

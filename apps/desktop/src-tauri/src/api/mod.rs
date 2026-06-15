@@ -1,5 +1,8 @@
+pub mod retry;
+
 use std::num::NonZeroUsize;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use base64::Engine;
 use lru::LruCache;
@@ -40,6 +43,13 @@ const WHISPER_HALLUCINATIONS: &[&str] = &[
     "hmm",
 ];
 
+// HTTP client timeout configuration (aligns with Python httpx settings).
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const HTTP_READ_TIMEOUT: Duration = Duration::from_secs(12);
+const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
+const ASR_POOL_MAX_IDLE: usize = 8;
+const TRANSLATION_POOL_MAX_IDLE: usize = 10;
+
 // Precompiled static regexes — compiled once instead of per-call.
 static RE_THINK_BLOCK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)\x{3c}think\x{3e}.*?\x{3c}/think\x{3e}").unwrap());
@@ -74,7 +84,13 @@ pub struct AsrClient {
 impl AsrClient {
     pub fn from_config(config: &RuntimeConfig) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .read_timeout(HTTP_READ_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .pool_max_idle_per_host(ASR_POOL_MAX_IDLE)
+                .build()
+                .expect("Failed to build ASR HTTP client"),
             base_url: config.effective_asr_base_url(),
             api_key: config.effective_asr_api_key(),
             model: config.asr_model.clone(),
@@ -103,16 +119,29 @@ impl AsrClient {
     }
 
     pub async fn transcribe(&self, wav: Vec<u8>, prompt: Option<&str>) -> AppResult<String> {
-        let raw = if self.format == "chat-completions" {
-            self.transcribe_chat(wav, prompt).await
-        } else {
-            self.transcribe_whisper(wav, prompt).await
-        }?;
+        let format = self.format.clone();
+        let this = self.clone();
+        let prompt_owned = prompt.map(|s| s.to_string());
+        let wav = std::sync::Arc::new(wav);
+        let raw = retry::with_retry(move || {
+            let f = format.clone();
+            let p = prompt_owned.clone();
+            let this = this.clone();
+            let wav = std::sync::Arc::clone(&wav);
+            async move {
+                if f == "chat-completions" {
+                    this.transcribe_chat(&wav, p.as_deref()).await
+                } else {
+                    this.transcribe_whisper(&wav, p.as_deref()).await
+                }
+            }
+        })
+        .await?;
         Ok(sanitize_asr_text(&raw, &self.language).text)
     }
 
-    async fn transcribe_whisper(&self, wav: Vec<u8>, prompt: Option<&str>) -> AppResult<String> {
-        let part = multipart::Part::bytes(wav)
+    async fn transcribe_whisper(&self, wav: &[u8], prompt: Option<&str>) -> AppResult<String> {
+        let part = multipart::Part::bytes(wav.to_vec())
             .file_name("audio.wav")
             .mime_str("audio/wav")
             .map_err(|e| AppError::InvalidApiResponse(e.to_string()))?;
@@ -135,7 +164,7 @@ impl AsrClient {
         Ok(body.text.trim().to_string())
     }
 
-    async fn transcribe_chat(&self, wav: Vec<u8>, prompt: Option<&str>) -> AppResult<String> {
+    async fn transcribe_chat(&self, wav: &[u8], prompt: Option<&str>) -> AppResult<String> {
         let audio = base64::engine::general_purpose::STANDARD.encode(wav);
         let system_content = if let Some(p) = prompt.filter(|p| !p.is_empty()) {
             format!("{CHAT_ASR_SYSTEM_PROMPT}\n\nPrevious context: {p}")
@@ -175,26 +204,32 @@ pub struct TranslationClient {
     base_url: String,
     api_key: String,
     model: String,
-    cache: LruCache<String, String>,
+    cache: tokio::sync::Mutex<LruCache<String, String>>,
 }
 
 impl TranslationClient {
     pub fn from_config(config: &RuntimeConfig) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .read_timeout(HTTP_READ_TIMEOUT)
+                .timeout(HTTP_TOTAL_TIMEOUT)
+                .pool_max_idle_per_host(TRANSLATION_POOL_MAX_IDLE)
+                .build()
+                .expect("Failed to build translation HTTP client"),
             base_url: config.base_url.clone(),
             api_key: config.api_key.clone(),
             model: config.translation_model.clone(),
-            cache: LruCache::new(NonZeroUsize::new(128).unwrap()),
+            cache: tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(128).unwrap())),
         }
     }
 
-    pub async fn test(&mut self) -> AppResult<String> {
+    pub async fn test(&self) -> AppResult<String> {
         self.translate("Hello world", "en", "zh-CN", &[], &[]).await
     }
 
     pub async fn translate(
-        &mut self,
+        &self,
         source_text: &str,
         source_lang: &str,
         target_lang: &str,
@@ -212,8 +247,11 @@ impl TranslationClient {
         }
 
         let key = normalize_cache_key(source_lang, target_lang, source_text);
-        if let Some(value) = self.cache.get(&key) {
-            return Ok(value.clone());
+        {
+            let mut cache = self.cache.lock().await;
+            if let Some(value) = cache.get(&key) {
+                return Ok(value.clone());
+            }
         }
 
         let matched = matched_glossary_terms(source_text, context, glossary_terms);
@@ -246,25 +284,38 @@ impl TranslationClient {
             "temperature": 0,
             "max_tokens": 256
         });
-        let response = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+        let http = self.http.clone();
+        let url = format!("{}/chat/completions", self.base_url);
+        let api_key = self.api_key.clone();
+        let body_clone = body.clone();
+        let response = retry::with_retry(move || {
+            let http = http.clone();
+            let url = url.clone();
+            let api_key = api_key.clone();
+            let body = body_clone.clone();
+            async move {
+                let resp = http
+                    .post(&url)
+                    .bearer_auth(&api_key)
+                    .json(&body)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                Ok(resp)
+            }
+        })
+        .await?;
         let mut translated = parse_chat_text(response.json::<ChatResponse>().await?)?;
         translated = clean_translation_text(&translated);
         translated = enforce_glossary(&translated, &matched);
-        self.cache.put(key, translated.clone());
+        self.cache.lock().await.put(key, translated.clone());
         Ok(translated)
     }
 
     /// Streaming translation: POST with `stream: true`, parse SSE tokens,
     /// send each token chunk through the channel. Returns the full cleaned text.
     pub async fn translate_streaming(
-        &mut self,
+        &self,
         source_text: &str,
         source_lang: &str,
         target_lang: &str,
@@ -283,11 +334,14 @@ impl TranslationClient {
         }
 
         let key = normalize_cache_key(source_lang, target_lang, source_text);
-        if let Some(value) = self.cache.get(&key) {
-            if let Some(tx) = &token_tx {
-                let _ = tx.send(value.clone()).await;
+        {
+            let mut cache = self.cache.lock().await;
+            if let Some(value) = cache.get(&key) {
+                if let Some(tx) = &token_tx {
+                    let _ = tx.send(value.clone()).await;
+                }
+                return Ok(value.clone());
             }
-            return Ok(value.clone());
         }
 
         let matched = matched_glossary_terms(source_text, context, glossary_terms);
@@ -322,14 +376,27 @@ impl TranslationClient {
         });
 
         use futures::StreamExt;
-        let response = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+        let http = self.http.clone();
+        let url = format!("{}/chat/completions", self.base_url);
+        let api_key = self.api_key.clone();
+        let body_clone = body.clone();
+        let response = retry::with_retry(move || {
+            let http = http.clone();
+            let url = url.clone();
+            let api_key = api_key.clone();
+            let body = body_clone.clone();
+            async move {
+                let resp = http
+                    .post(&url)
+                    .bearer_auth(&api_key)
+                    .json(&body)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                Ok(resp)
+            }
+        })
+        .await?;
 
         let mut stream = response.bytes_stream();
         let mut accumulated = String::new();
@@ -370,7 +437,7 @@ impl TranslationClient {
 
         let mut translated = clean_translation_text(&accumulated);
         translated = enforce_glossary(&translated, &matched);
-        self.cache.put(key, translated.clone());
+        self.cache.lock().await.put(key, translated.clone());
         Ok(translated)
     }
 }
@@ -635,6 +702,14 @@ fn rejected(reason: &'static str) -> SanitizedAsrText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
 
     #[test]
     fn wav_has_riff_header() {
@@ -758,5 +833,77 @@ mod tests {
         let key_en_zh = normalize_cache_key("en", "zh-CN", "hello world");
         let key_en_ja = normalize_cache_key("en", "ja", "hello world");
         assert_ne!(key_en_zh, key_en_ja);
+    }
+
+    #[tokio::test]
+    async fn streaming_translation_retries_before_stream_starts() {
+        let body =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Bonjour\"}}]}\n\ndata: [DONE]\n\n";
+        let (base_url, attempts, server) = spawn_response_server(vec![
+            http_response(500, "Internal Server Error", ""),
+            http_response(200, "OK", body),
+        ])
+        .await;
+        let client = test_translation_client(base_url);
+
+        let translated = client
+            .translate_streaming("Hello", "en", "fr", &[], &[], None)
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(translated, "Bonjour");
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn streaming_translation_does_not_retry_client_error() {
+        let (base_url, attempts, server) =
+            spawn_response_server(vec![http_response(400, "Bad Request", "")]).await;
+        let client = test_translation_client(base_url);
+
+        let result = client
+            .translate_streaming("Hello", "en", "fr", &[], &[], None)
+            .await;
+
+        server.await.unwrap();
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    fn test_translation_client(base_url: String) -> TranslationClient {
+        TranslationClient {
+            http: reqwest::Client::new(),
+            base_url,
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            cache: tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(128).unwrap())),
+        }
+    }
+
+    async fn spawn_response_server(
+        responses: Vec<String>,
+    ) -> (String, Arc<AtomicU32>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_for_server = attempts.clone();
+        let server = tokio::spawn(async move {
+            for response in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                attempts_for_server.fetch_add(1, Ordering::Relaxed);
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await.unwrap();
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{addr}"), attempts, server)
+    }
+
+    fn http_response(status: u16, reason: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
     }
 }
