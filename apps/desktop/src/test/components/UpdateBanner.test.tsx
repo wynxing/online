@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { UpdateBanner } from "../../components/UpdateBanner";
+import { withLang } from "../helpers";
 
 type UpdateBannerProps = ComponentProps<typeof UpdateBanner>;
 
@@ -16,7 +17,7 @@ const defaultProps: UpdateBannerProps = {
 
 function renderBanner(overrides: Partial<UpdateBannerProps> = {}) {
   const props = { ...defaultProps, ...overrides };
-  return { ...render(<UpdateBanner {...props} />), props };
+  return { ...render(withLang(<UpdateBanner {...props} />, "zh")), props };
 }
 
 describe("UpdateBanner", () => {

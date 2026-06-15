@@ -31,8 +31,7 @@ If applicable, add screenshots to help explain your problem.
 ## Environment
 
 - OS: [e.g., Windows 11]
-- App Version: [e.g., 0.1.0]
-- Python Version: [e.g., 3.13]
+- App Version: [e.g., 0.5.0]
 
 ## Additional Context
 

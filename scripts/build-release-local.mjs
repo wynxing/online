@@ -16,6 +16,4 @@ function run(command, args) {
 }
 
 run("npm", ["install"]);
-run("python", ["-m", "pip", "install", "-r", "runtime/requirements.txt"]);
-run("node", ["scripts/build-runtime-sidecar.mjs"]);
 run("npm", ["run", "tauri", "--", "build"]);

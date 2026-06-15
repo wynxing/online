@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { SubtitlePanel } from "../../components/SubtitlePanel";
+import { withLang } from "../helpers";
 import type { SubtitleSegment, PipelineDiagnostics } from "../../types";
 
 const emptyDiagnostics: PipelineDiagnostics = { droppedCount: 0, lowEnergyDrops: 0 };
@@ -34,7 +35,7 @@ const defaultProps = {
 };
 
 function renderPanel(overrides = {}) {
-  return render(<SubtitlePanel {...defaultProps} {...overrides} />);
+  return render(withLang(<SubtitlePanel {...defaultProps} {...overrides} />, "zh"));
 }
 
 describe("SubtitlePanel", () => {

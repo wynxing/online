@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import type { DisplayMode, SubtitleSegment } from "../types";
 import { useSubtitleSocket } from "../hooks/useSubtitleSocket";
 import { SubtitleContent } from "./SubtitleContent";
-import { modeLabel } from "../utils/format";
+import { t, useLang } from "../i18n";
+import { useTheme } from "../hooks/useTheme";
 
 function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[] {
   return segments.filter((segment) => !segment.supersededBy);
 }
 
 export function FloatingSubtitles() {
+  useTheme(); // 初始化主题，使浮窗尊重用户选择的 light/dark/system
+  const lang = useLang();
   const { segments, correctedIds, socketStatus } = useSubtitleSocket();
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
   const [displayMode, setDisplayMode] = useState<DisplayMode>(
@@ -64,7 +67,7 @@ export function FloatingSubtitles() {
     <div className="floating-shell">
       <div className="floating-toolbar" onMouseDown={(e) => void handleDragStart(e)}>
         <span className={`status-dot ${socketStatus}`} />
-        <span>AI 同传字幕</span>
+        <span>{t("floating.title", lang)}</span>
         <div className="floating-modes">
           {(["source", "translated", "bilingual"] as DisplayMode[]).map((mode) => (
             <button
@@ -72,11 +75,15 @@ export function FloatingSubtitles() {
               className={displayMode === mode ? "active" : ""}
               onClick={() => setDisplayMode(mode)}
             >
-              {modeLabel(mode)}
+              {t(`controlPanel.mode.${mode}`, lang)}
             </button>
           ))}
         </div>
-        <button className="floating-close" onClick={() => void handleClose()} title="关闭浮窗">
+        <button
+          className="floating-close"
+          onClick={() => void handleClose()}
+          title={t("floating.close", lang)}
+        >
           ✕
         </button>
       </div>
@@ -84,7 +91,7 @@ export function FloatingSubtitles() {
         {latest ? (
           <SubtitleContent segment={latest} displayMode={displayMode} fontSize={fontSize} />
         ) : (
-          <span className="floating-empty">等待同传会话开始...</span>
+          <span className="floating-empty">{t("floating.waitingForSession", lang)}</span>
         )}
       </div>
     </div>

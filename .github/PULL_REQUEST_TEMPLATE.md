@@ -11,7 +11,7 @@ Brief description of the changes.
 ## Testing
 
 - [ ] Unit tests pass (`npm run test`)
-- [ ] Python tests pass (`npm run test:runtime`)
+- [ ] Rust tests pass (`cargo test`)
 - [ ] Lint passes (`npm run lint`)
 
 ## Screenshots

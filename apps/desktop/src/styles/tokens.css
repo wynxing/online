@@ -1,0 +1,183 @@
+/* ── Design Tokens ──────────────────────────────────── */
+
+:root {
+  /* Light mode (default) */
+
+  /* Backgrounds */
+  --bg: #f8f5ef;
+  --bg-elevated: #ffffff;
+  --panel: #ffffff;
+  --panel-hover: #f3efe8;
+  --panel-solid: #ffffff;
+  --panel-2: #f7f4ee;
+  --panel-3: #eee9e0;
+
+  /* Borders */
+  --line: rgba(0, 0, 0, 0.07);
+  --line-strong: rgba(160, 123, 46, 0.22);
+
+  /* Text */
+  --text: #2c2820;
+  --soft: #6b6358;
+  --muted: #9e958a;
+  --dim: #b5ad9f;
+
+  /* Accent — Amber Gold */
+  --accent: #a07b2e;
+  --accent-dim: #d4a853;
+  --accent-glow: rgba(160, 123, 46, 0.10);
+
+  /* Semantic */
+  --success: #3d8a50;
+  --success-dim: rgba(61, 138, 80, 0.10);
+  --info: #2a7da8;
+  --warning: #b8892e;
+  --danger: #c43838;
+
+  /* Shadows */
+  --shadow: 0 26px 80px rgba(0, 0, 0, 0.08);
+  --shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.06);
+
+  /* Shape */
+  --radius: 8px;
+  --radius-sm: 6px;
+
+  /* Motion */
+  --speed: 180ms;
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(160, 123, 46, 0.28);
+  --scrollbar-track: rgba(0, 0, 0, 0.04);
+
+  /* Input */
+  --input-bg: rgba(0, 0, 0, 0.03);
+  --input-bg-hover: rgba(0, 0, 0, 0.05);
+  --input-bg-focus: rgba(0, 0, 0, 0.05);
+  --input-focus-ring: rgba(160, 123, 46, 0.18);
+
+  /* Segmented control */
+  --seg-bg: rgba(0, 0, 0, 0.04);
+  --seg-active-bg: rgba(160, 123, 46, 0.10);
+  --seg-active-border: rgba(160, 123, 46, 0.18);
+
+  /* Panel surface */
+  --surface-gradient: linear-gradient(180deg, rgba(0, 0, 0, 0.015), rgba(0, 0, 0, 0.005));
+  --surface-top-highlight: rgba(255, 255, 255, 0.6);
+  --surface-inner: rgba(0, 0, 0, 0.02);
+
+  /* Body background */
+  --body-bg: linear-gradient(115deg, rgba(160, 123, 46, 0.04), transparent 28%),
+             linear-gradient(245deg, rgba(42, 125, 168, 0.03), transparent 30%),
+             linear-gradient(180deg, #faf7f1 0%, #f5f1ea 100%);
+}
+
+/* ── Dark mode ─────────────────────────────────────── */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #16140f;
+  --bg-elevated: #1d1a14;
+  --panel: #242018;
+  --panel-hover: #2c2820;
+  --panel-solid: #201d17;
+  --panel-2: #2a2620;
+  --panel-3: #302c24;
+
+  --line: rgba(255, 235, 200, 0.08);
+  --line-strong: rgba(212, 168, 83, 0.28);
+
+  --text: #f0ece4;
+  --soft: #b5ae9e;
+  --muted: #7a7468;
+  --dim: #5e5850;
+
+  --accent: #d4a853;
+  --accent-dim: #a07b2e;
+  --accent-glow: rgba(212, 168, 83, 0.16);
+
+  --success: #7cb88a;
+  --success-dim: rgba(124, 184, 138, 0.14);
+  --info: #7bb8d4;
+  --warning: #e5a853;
+  --danger: #e06060;
+
+  --shadow: 0 26px 80px rgba(0, 0, 0, 0.38);
+  --shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.28);
+
+  --scrollbar-thumb: rgba(212, 168, 83, 0.42);
+  --scrollbar-track: rgba(255, 255, 255, 0.04);
+
+  --input-bg: rgba(0, 0, 0, 0.28);
+  --input-bg-hover: rgba(255, 235, 200, 0.06);
+  --input-bg-focus: rgba(0, 0, 0, 0.36);
+  --input-focus-ring: rgba(160, 123, 46, 0.22);
+
+  --seg-bg: rgba(0, 0, 0, 0.30);
+  --seg-active-bg: rgba(212, 168, 83, 0.14);
+  --seg-active-border: rgba(212, 168, 83, 0.20);
+
+  --surface-gradient: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
+  --surface-top-highlight: rgba(255, 255, 255, 0.06);
+  --surface-inner: rgba(0, 0, 0, 0.18);
+
+  --body-bg: linear-gradient(115deg, rgba(212, 168, 83, 0.06), transparent 28%),
+             linear-gradient(245deg, rgba(123, 184, 212, 0.04), transparent 30%),
+             linear-gradient(180deg, #18150f 0%, #12100b 100%);
+}
+
+/* System preference fallback — dark when no explicit choice */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #16140f;
+    --bg-elevated: #1d1a14;
+    --panel: #242018;
+    --panel-hover: #2c2820;
+    --panel-solid: #201d17;
+    --panel-2: #2a2620;
+    --panel-3: #302c24;
+
+    --line: rgba(255, 235, 200, 0.08);
+    --line-strong: rgba(212, 168, 83, 0.28);
+
+    --text: #f0ece4;
+    --soft: #b5ae9e;
+    --muted: #7a7468;
+    --dim: #5e5850;
+
+    --accent: #d4a853;
+    --accent-dim: #a07b2e;
+    --accent-glow: rgba(212, 168, 83, 0.16);
+
+    --success: #7cb88a;
+    --success-dim: rgba(124, 184, 138, 0.14);
+    --info: #7bb8d4;
+    --warning: #e5a853;
+    --danger: #e06060;
+
+    --shadow: 0 26px 80px rgba(0, 0, 0, 0.38);
+    --shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.28);
+
+    --scrollbar-thumb: rgba(212, 168, 83, 0.42);
+    --scrollbar-track: rgba(255, 255, 255, 0.04);
+
+    --input-bg: rgba(0, 0, 0, 0.28);
+    --input-bg-hover: rgba(255, 235, 200, 0.06);
+    --input-bg-focus: rgba(0, 0, 0, 0.36);
+    --input-focus-ring: rgba(160, 123, 46, 0.22);
+
+    --seg-bg: rgba(0, 0, 0, 0.30);
+    --seg-active-bg: rgba(212, 168, 83, 0.14);
+    --seg-active-border: rgba(212, 168, 83, 0.20);
+
+    --surface-gradient: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
+    --surface-top-highlight: rgba(255, 255, 255, 0.06);
+    --surface-inner: rgba(0, 0, 0, 0.18);
+
+    --body-bg: linear-gradient(115deg, rgba(212, 168, 83, 0.06), transparent 28%),
+               linear-gradient(245deg, rgba(123, 184, 212, 0.04), transparent 30%),
+               linear-gradient(180deg, #18150f 0%, #12100b 100%);
+  }
+}

@@ -1,4 +1,5 @@
 import type { SessionRecord, SubtitleSegment } from "../types";
+import { t, useLang } from "../i18n";
 import { SubtitleRow } from "./SubtitleRow";
 import { EmptyState } from "./common/EmptyState";
 import { formatDate } from "../utils/format";
@@ -16,11 +17,12 @@ export function HistoryPanel({
   historySegments,
   onSelectSession,
 }: HistoryPanelProps) {
+  const lang = useLang();
   return (
     <section className="history-grid">
       <div className="history-list">
         {sessions.length === 0 ? (
-          <EmptyState title="暂无历史记录" body="停止一次会话后，最终字幕会保存到 SQLite。" />
+          <EmptyState title={t("history.emptyTitle", lang)} body={t("history.emptyBody", lang)} />
         ) : (
           sessions.map((session) => (
             <button
@@ -29,17 +31,25 @@ export function HistoryPanel({
               onClick={() => onSelectSession(session.id)}
             >
               <strong>{session.title}</strong>
-              <span>{formatDate(session.startedAt)}</span>
+              <span>{formatDate(session.startedAt, lang)}</span>
             </button>
           ))
         )}
       </div>
       <div className="history-detail">
         {historySegments.length === 0 ? (
-          <EmptyState title="选择一条会话" body="这里会展示该会话保存下来的最终字幕和修正字幕。" />
+          <EmptyState
+            title={t("history.detailEmptyTitle", lang)}
+            body={t("history.detailEmptyBody", lang)}
+          />
         ) : (
           historySegments.map((segment) => (
-            <SubtitleRow key={segment.id} segment={segment} displayMode="bilingual" corrected={false} />
+            <SubtitleRow
+              key={segment.id}
+              segment={segment}
+              displayMode="bilingual"
+              corrected={false}
+            />
           ))
         )}
       </div>

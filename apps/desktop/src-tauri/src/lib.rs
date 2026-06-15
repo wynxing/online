@@ -1,292 +1,70 @@
-use std::sync::Mutex;
-use std::time::Duration;
+pub mod api;
+pub mod audio;
+mod commands;
+pub mod error;
+pub mod models;
+pub mod pipeline;
+mod state;
+pub mod storage;
 
-use tauri::{Manager, RunEvent};
-use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
-    ShellExt,
+use commands::{
+    create_glossary, delete_glossary, get_config, get_segments, health_check, list_devices,
+    list_glossary, list_sessions, save_config, start_session, stop_session, test_asr,
+    test_translation, update_glossary,
 };
-use wait_timeout::ChildExt;
-
-struct RuntimeProcess {
-    child: Mutex<Option<CommandChild>>,
-    last_error: Mutex<Option<String>>,
-    restart_count: Mutex<u32>,
-    is_shutting_down: Mutex<bool>,
-}
-
-const MAX_RESTART_ATTEMPTS: u32 = 3;
-const RESTART_DELAY_MS: u64 = 2000;
-
-/// Upper bound for OS-specific process tree termination before we give up.
-const KILL_TIMEOUT: Duration = Duration::from_secs(5);
-
-impl Default for RuntimeProcess {
-    fn default() -> Self {
-        Self {
-            child: Mutex::new(None),
-            last_error: Mutex::new(None),
-            restart_count: Mutex::new(0),
-            is_shutting_down: Mutex::new(false),
-        }
-    }
-}
-
-fn spawn_sidecar(handle: &tauri::AppHandle) {
-    let command = match handle.shell().sidecar("ai-interpretation-runtime") {
-        Ok(command) => command.env("ONLINE_RUNTIME_RELOAD", "0"),
-        Err(error) => {
-            let msg = format!("sidecar binary not found: {error}");
-            eprintln!("Runtime {msg}");
-            let state = handle.state::<RuntimeProcess>();
-            *state.last_error.lock().unwrap() = Some(msg);
-            return;
-        }
-    };
-
-    let (mut rx, child) = match command.spawn() {
-        Ok(process) => process,
-        Err(error) => {
-            let msg = format!("failed to spawn sidecar: {error}");
-            eprintln!("Runtime {msg}");
-            let state = handle.state::<RuntimeProcess>();
-            *state.last_error.lock().unwrap() = Some(msg);
-            return;
-        }
-    };
-
-    {
-        let state = handle.state::<RuntimeProcess>();
-        *state.child.lock().unwrap() = Some(child);
-        *state.last_error.lock().unwrap() = None;
-        *state.restart_count.lock().unwrap() = 0; // Reset restart count on successful spawn
-        *state.is_shutting_down.lock().unwrap() = false;
-    }
-
-    let handle = handle.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    eprintln!("runtime stdout: {}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Stderr(line) => {
-                    eprintln!("runtime stderr: {}", String::from_utf8_lossy(&line));
-                }
-                CommandEvent::Error(error) => {
-                    eprintln!("runtime process error: {error}");
-                }
-                CommandEvent::Terminated(payload) => {
-                    eprintln!("runtime process terminated: {:?}", payload.code);
-                    let state = handle.state::<RuntimeProcess>();
-                    *state.child.lock().unwrap() = None;
-
-                    // Skip auto-restart if app is shutting down
-                    if *state.is_shutting_down.lock().unwrap() {
-                        break;
-                    }
-
-                    // Auto-restart logic
-                    let mut restart_count = state.restart_count.lock().unwrap();
-                    if *restart_count < MAX_RESTART_ATTEMPTS {
-                        *restart_count += 1;
-                        eprintln!(
-                            "Attempting to restart runtime (attempt {}/{})",
-                            *restart_count, MAX_RESTART_ATTEMPTS
-                        );
-                        drop(restart_count);
-
-                        // Wait before restarting to avoid rapid restart loops
-                        std::thread::sleep(Duration::from_millis(RESTART_DELAY_MS));
-
-                        // Spawn a new sidecar
-                        spawn_sidecar(&handle);
-                    } else {
-                        eprintln!(
-                            "Max restart attempts ({}) reached. Runtime will not be restarted.",
-                            MAX_RESTART_ATTEMPTS
-                        );
-                        *state.last_error.lock().unwrap() = Some(
-                            "Runtime failed to start after multiple attempts".to_string(),
-                        );
-                    }
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
-}
-
-fn start_runtime_sidecar(app: &tauri::App) {
-    spawn_sidecar(app.handle());
-}
-
-/// Kill a process and all its children on Windows using taskkill /F /T.
-/// Blocks until taskkill exits or `KILL_TIMEOUT` elapses.
-#[cfg(target_os = "windows")]
-fn kill_process_tree(pid: u32) -> std::io::Result<()> {
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    match child.wait_timeout(KILL_TIMEOUT)? {
-        Some(status) => {
-            if !status.success() {
-                eprintln!("taskkill /F /T /PID {} exited with {:?}", pid, status.code());
-            }
-            Ok(())
-        }
-        None => {
-            eprintln!("taskkill /F /T /PID {} timed out; killing taskkill", pid);
-            let _ = child.kill();
-            let _ = child.wait();
-            Ok(())
-        }
-    }
-}
-
-#[cfg(unix)]
-fn kill_process_tree(pid: u32) -> std::io::Result<()> {
-    use std::process::{Command, Stdio};
-    use std::thread;
-    use std::time::Instant;
-
-    fn child_pids(pid: u32) -> Vec<u32> {
-        let output = Command::new("pgrep")
-            .args(["-P", &pid.to_string()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
-
-        let mut children = Vec::new();
-        if let Ok(output) = output {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if let Ok(child_pid) = line.trim().parse::<u32>() {
-                        children.push(child_pid);
-                        children.extend(child_pids(child_pid));
-                    }
-                }
-            }
-        }
-        children
-    }
-
-    fn signal(pid: u32, sig: &str) {
-        let _ = Command::new("kill")
-            .args([sig, &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-
-    fn is_alive(pid: u32) -> bool {
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-
-    let mut pids = child_pids(pid);
-    pids.push(pid);
-    pids.dedup();
-
-    for process_id in pids.iter().rev() {
-        signal(*process_id, "-TERM");
-    }
-
-    let started_at = Instant::now();
-    while started_at.elapsed() < KILL_TIMEOUT {
-        if pids.iter().all(|process_id| !is_alive(*process_id)) {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    for process_id in pids.iter().rev() {
-        if is_alive(*process_id) {
-            signal(*process_id, "-KILL");
-        }
-    }
-    Ok(())
-}
-
-fn stop_runtime_sidecar_inner<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    let state = app.state::<RuntimeProcess>();
-    // Set shutdown flag FIRST so any Terminated event arriving during
-    // process-tree termination takes the "no restart" branch and doesn't clear `child`
-    // out from under us.
-    *state.is_shutting_down.lock().unwrap() = true;
-    let child = state.child.lock().unwrap().take();
-    if let Some(child) = child {
-        if let Err(e) = kill_process_tree(child.pid()) {
-            eprintln!("kill_process_tree failed for pid {}: {e}", child.pid());
-        }
-        let _ = child.kill();
-    }
-}
-
-fn stop_runtime_sidecar<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    stop_runtime_sidecar_inner(app);
-}
-
-#[tauri::command]
-fn runtime_status(state: tauri::State<'_, RuntimeProcess>) -> serde_json::Value {
-    let alive = state.child.lock().unwrap().is_some();
-    let error = state.last_error.lock().unwrap().clone();
-    serde_json::json!({ "alive": alive, "error": error })
-}
-
-#[tauri::command]
-fn restart_runtime(handle: tauri::AppHandle) -> Result<(), String> {
-    {
-        let state = handle.state::<RuntimeProcess>();
-        let child = state.child.lock().unwrap().take();
-        if let Some(child) = child {
-            if let Err(e) = kill_process_tree(child.pid()) {
-                eprintln!("kill_process_tree failed for pid {}: {e}", child.pid());
-            }
-            let _ = child.kill();
-        }
-        *state.last_error.lock().unwrap() = None;
-        *state.is_shutting_down.lock().unwrap() = false;
-    }
-    spawn_sidecar(&handle);
-    Ok(())
-}
-
-/// Synchronously stop the runtime sidecar. The frontend MUST await this
-/// before calling `relaunch()` so the OS releases the file handle on the
-/// sidecar executable before the auto-updater installer tries to write it.
-#[tauri::command]
-fn stop_runtime(handle: tauri::AppHandle) -> Result<(), String> {
-    stop_runtime_sidecar_inner(&handle);
-    Ok(())
-}
+use state::AppState;
+use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _log_guard = init_logging();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            app.manage(RuntimeProcess::default());
-            start_runtime_sidecar(app);
+            let state = AppState::new(app.handle())?;
+            app.manage(state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_status, restart_runtime, stop_runtime])
+        .invoke_handler(tauri::generate_handler![
+            health_check,
+            list_devices,
+            get_config,
+            save_config,
+            start_session,
+            stop_session,
+            list_sessions,
+            get_segments,
+            list_glossary,
+            create_glossary,
+            update_glossary,
+            delete_glossary,
+            test_asr,
+            test_translation
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::Exit = event {
-                stop_runtime_sidecar(app);
+                let state = app.state::<AppState>();
+                state.pipeline.blocking_stop();
             }
         });
+}
+
+fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let data_dir = storage::data_dir();
+    let log_dir = data_dir.join("logs");
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return None;
+    }
+
+    let file_appender = tracing_appender::rolling::daily(log_dir, "runtime.log");
+    let (writer, guard) = tracing_appender::non_blocking(file_appender);
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false)
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+    Some(guard)
 }

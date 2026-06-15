@@ -1,5 +1,6 @@
 import { Download, X } from "lucide-react";
 import type { DownloadProgress, UpdateInfo, UpdateStatus } from "../hooks/useUpdateChecker";
+import { t, useLang } from "../i18n";
 
 interface UpdateBannerProps {
   status: UpdateStatus;
@@ -18,6 +19,7 @@ export function UpdateBanner({
   onUpdate,
   onDismiss,
 }: UpdateBannerProps) {
+  const lang = useLang();
   if (status === "idle" || status === "checking") {
     return null;
   }
@@ -36,16 +38,18 @@ export function UpdateBanner({
         <Download size={16} />
         <div className="update-banner__info">
           {status === "error" ? (
-            <span>更新检查失败：{error ?? "未知错误"}</span>
+            <span>
+              {t("update.checkFailed", lang)}：{error ?? t("errorBoundary.unknownError", lang)}
+            </span>
           ) : status === "downloading" ? (
             <span>
-              正在下载 v{version}... {progressPercent}%
+              {t("update.downloading", lang)} v{version}... {progressPercent}%
             </span>
           ) : status === "ready" ? (
-            <span>更新已安装，正在重启...</span>
+            <span>{t("update.installedRestarting", lang)}</span>
           ) : (
             <span>
-              发现新版本 <strong>v{version}</strong>
+              {t("update.newVersion", lang)} <strong>v{version}</strong>
               {updateInfo?.notes && ` - ${updateInfo.notes}`}
             </span>
           )}
@@ -61,14 +65,14 @@ export function UpdateBanner({
       <div className="update-banner__actions">
         {(status === "available" || status === "error") && (
           <button className="primary-button update-banner__btn" onClick={onUpdate}>
-            {status === "error" ? "重试" : "立即更新"}
+            {status === "error" ? t("update.retry", lang) : t("update.updateNow", lang)}
           </button>
         )}
         {status !== "downloading" && status !== "ready" && (
           <button
             className="icon-button update-banner__close"
             onClick={onDismiss}
-            title="忽略此次更新"
+            title={t("update.dismissTooltip", lang)}
           >
             <X size={14} />
           </button>

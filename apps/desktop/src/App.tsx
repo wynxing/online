@@ -1,4 +1,15 @@
-import { Activity, BookOpen, ExternalLink, History, Settings, Wifi, WifiOff } from "lucide-react";
+import {
+  Activity,
+  BookOpen,
+  ExternalLink,
+  History,
+  Monitor,
+  Settings,
+  Sun,
+  Moon,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   createGlossaryTerm,
@@ -6,11 +17,8 @@ import {
   getConfig,
   getDevices,
   getGlossary,
-  getRuntimeStatus,
   getSessionSegments,
   getSessions,
-  health,
-  restartRuntime,
   saveConfig,
   startSession,
   stopSession,
@@ -18,16 +26,20 @@ import {
   testTranslation,
   updateGlossaryTerm,
 } from "./api";
-import { useSubtitleSocket } from "./hooks/useSubtitleSocket";
-import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { ControlPanel } from "./components/ControlPanel";
-import { SubtitlePanel } from "./components/SubtitlePanel";
-import { SettingsPanel } from "./components/SettingsPanel";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { GlossaryPanel } from "./components/GlossaryPanel";
 import { FloatingSubtitles } from "./components/FloatingSubtitles";
+import { GlossaryPanel } from "./components/GlossaryPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { SubtitlePanel } from "./components/SubtitlePanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { NavButton } from "./components/common/NavButton";
+import { useSubtitleSocket } from "./hooks/useSubtitleSocket";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
+import { useTheme } from "./hooks/useTheme";
+import { t, detectLang, LangProvider } from "./i18n";
+import type { Lang } from "./i18n";
+import logoUrl from "./assets/brand/logo.png";
 import type {
   Device,
   GlossaryTerm,
@@ -41,9 +53,9 @@ const defaultConfig: RuntimeConfig = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   translationModel: "gpt-4o-mini",
-  asrProvider: "mock",
+  asrProvider: "openai-compatible",
   translationProvider: "openai-compatible",
-  defaultInputDeviceId: "system_loopback",
+  defaultInputDeviceId: "",
   displayMode: "bilingual",
   fontSize: 24,
   glossaryEnabled: true,
@@ -51,6 +63,8 @@ const defaultConfig: RuntimeConfig = {
   asrApiKey: "",
   asrModel: "whisper-1",
   asrLanguage: "en",
+  sourceLang: "en",
+  targetLang: "zh-CN",
   asrFormat: "whisper",
   asrConcurrency: 2,
   translationConcurrency: 3,
@@ -64,18 +78,12 @@ function normalizeConfig(config: RuntimeConfig): RuntimeConfig {
   return { ...defaultConfig, ...config };
 }
 
-function preferLoopbackConfig(config: RuntimeConfig, devices: Device[]): RuntimeConfig {
-  if (config.asrProvider === "mock") {
-    return config;
-  }
+function preferAvailableDevice(config: RuntimeConfig, devices: Device[]): RuntimeConfig {
   const selected = devices.find((device) => device.id === config.defaultInputDeviceId);
-  if (selected?.kind === "system") {
-    return config;
-  }
-  const loopback = devices.find(
-    (device) => device.kind === "system" && device.id.startsWith("wasapi_loopback_")
-  );
-  return loopback ? { ...config, defaultInputDeviceId: loopback.id } : config;
+  if (selected) return config;
+  const systemDevice = devices.find((device) => device.kind === "system");
+  const fallback = systemDevice ?? devices[0];
+  return fallback ? { ...config, defaultInputDeviceId: fallback.id } : config;
 }
 
 function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[] {
@@ -85,12 +93,18 @@ function visibleSubtitleSegments(segments: SubtitleSegment[]): SubtitleSegment[]
 export function App() {
   const isFloating = new URLSearchParams(window.location.search).get("view") === "floating";
   if (isFloating) {
-    return <FloatingSubtitles />;
+    return (
+      <LangProvider value={detectLang()}>
+        <FloatingSubtitles />
+      </LangProvider>
+    );
   }
   return <MainConsole />;
 }
 
 function MainConsole() {
+  const [lang, setLang] = useState<Lang>(detectLang);
+  const langRef = useRef(lang);
   const [tab, setTab] = useState<Tab>("console");
   const [devices, setDevices] = useState<Device[]>([]);
   const [config, setConfig] = useState<RuntimeConfig>(defaultConfig);
@@ -100,14 +114,14 @@ function MainConsole() {
   const [historySegments, setHistorySegments] = useState<SubtitleSegment[]>([]);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [newTerm, setNewTerm] = useState({ source: "", target: "", domain: "" });
-  const [notice, setNotice] = useState("Runtime 未检测");
-  const [restarting, setRestarting] = useState(false);
+  const [notice, setNotice] = useState(() => t("runtime.initializing", detectLang()));
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     kind: string;
     ok: boolean;
     message: string;
   } | null>(null);
+
   const {
     segments,
     setSegments,
@@ -118,7 +132,6 @@ function MainConsole() {
     setErrorLog,
     diagnostics,
     setDiagnostics,
-    reconnectAttempt,
   } = useSubtitleSocket();
 
   const {
@@ -130,148 +143,85 @@ function MainConsole() {
     dismiss: dismissUpdate,
   } = useUpdateChecker();
 
+  const { theme, cycleTheme } = useTheme();
+
   const visibleSegments = useMemo(() => visibleSubtitleSegments(segments), [segments]);
-  const sourceDevice = devices.find((device) => device.id === config.defaultInputDeviceId);
   const isRunning = sessionStatus === "running";
 
-  const bootstrapId = useRef(0);
+  function cycleLang() {
+    setLang((prev) => {
+      const next = prev === "zh" ? "en" : "zh";
+      window.localStorage.setItem("lang", next);
+      return next;
+    });
+  }
 
   useEffect(() => {
     void bootstrap();
   }, []);
 
-  // 同步字号到 localStorage，供浮窗读取
   useEffect(() => {
     window.localStorage.setItem("fontSize", String(config.fontSize));
   }, [config.fontSize]);
 
-  // 设备列表轮询：Runtime 已连接后每 5 秒刷新一次
   useEffect(() => {
-    if (notice !== "Runtime 已连接") return;
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       void getDevices()
-        .then(setDevices)
-        .catch(() => {});
+        .then((runtimeDevices) => {
+          setDevices(runtimeDevices);
+          setConfig((current) => preferAvailableDevice(current, runtimeDevices));
+        })
+        .catch(() => undefined);
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [notice]);
+  }, []);
 
-  async function bootstrap(retries = 15, delayMs = 1000) {
-    const id = ++bootstrapId.current;
-
-    // 步骤 1：先尝试健康检查（快速检测 Runtime 是否已存在）
+  async function bootstrap() {
     try {
-      await health();
-      if (id !== bootstrapId.current) return;
-
-      // Runtime 已在运行，直接连接
       const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all([
         getConfig(),
         getDevices(),
         getGlossary(),
         getSessions(),
       ]);
-      if (id !== bootstrapId.current) return;
-
-      setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
+      setConfig(preferAvailableDevice(normalizeConfig(runtimeConfig), runtimeDevices));
       setDevices(runtimeDevices);
       setGlossary(runtimeGlossary);
       setSessions(runtimeSessions);
-      setNotice("Runtime 已连接");
-      return;
-    } catch {
-      // 健康检查失败，继续步骤 2
-    }
-
-    // 步骤 2：检查 sidecar 进程状态
-    try {
-      const status = await getRuntimeStatus();
-      if (id !== bootstrapId.current) return;
-
-      if (status.alive) {
-        // 进程在运行但健康检查失败，等待并重试
-        setNotice("Runtime 进程运行中，等待服务就绪...");
-      } else if (status.error) {
-        // sidecar 启动失败，有明确错误信息（如二进制文件缺失）
-        setNotice(`Runtime 启动失败：${status.error}`);
-        return;
-      } else {
-        // sidecar 进程不在运行，尝试启动
-        setNotice("Runtime 进程未运行，正在启动...");
-        await restartRuntime();
-        if (id !== bootstrapId.current) return;
-      }
-    } catch {
-      // invoke 失败（如在 dev 模式），跳过 sidecar 检查
-    }
-
-    // 步骤 3：轮询健康检查（等待 sidecar 就绪）
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      if (id !== bootstrapId.current) return;
-      try {
-        await health();
-        if (id !== bootstrapId.current) return;
-
-        // 健康检查成功，加载配置和数据
-        const [runtimeConfig, runtimeDevices, runtimeGlossary, runtimeSessions] = await Promise.all(
-          [getConfig(), getDevices(), getGlossary(), getSessions()]
-        );
-        if (id !== bootstrapId.current) return;
-
-        setConfig(preferLoopbackConfig(normalizeConfig(runtimeConfig), runtimeDevices));
-        setDevices(runtimeDevices);
-        setGlossary(runtimeGlossary);
-        setSessions(runtimeSessions);
-        setNotice("Runtime 已连接");
-        return;
-      } catch (error: unknown) {
-        if (id !== bootstrapId.current) return;
-        if (attempt < retries) {
-          setNotice(`Runtime 启动中... (${attempt}/${retries})`);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue;
-        }
-        const message =
-          error instanceof TypeError
-            ? "Runtime 无响应，请检查端口 8765 或重启应用"
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        setNotice(`Runtime 未就绪：${message}`);
-      }
-    }
-  }
-
-  async function handleRestartRuntime() {
-    setRestarting(true);
-    try {
-      await restartRuntime();
-      await bootstrap();
-    } finally {
-      setRestarting(false);
+      setNotice(t("runtime.ready", langRef.current));
+    } catch (error) {
+      setNotice(
+        `${t("runtime.initFailed", langRef.current)}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
   async function handleStart() {
-    if (config.asrProvider !== "mock") {
-      const errors: string[] = [];
-      const asrKey = config.asrApiKey || config.apiKey;
-      const asrUrl = config.asrBaseUrl || config.baseUrl;
-      if (!asrUrl) errors.push("ASR 服务地址未配置");
-      if (!asrKey) errors.push("ASR API Key 未配置");
-      if (!config.apiKey) errors.push("翻译 API Key 未配置");
-      if (sourceDevice?.kind === "mock") errors.push("请选择真实的音频输入设备");
-      if (errors.length > 0) {
-        setNotice(`无法启动：${errors.join("；")}`);
-        return;
-      }
+    const errors: string[] = [];
+    const asrKey = config.asrApiKey || config.apiKey;
+    const asrUrl = config.asrBaseUrl || config.baseUrl;
+    if (!asrUrl) errors.push(t("validation.asrBaseUrlRequired", lang));
+    if (!asrKey) errors.push(t("validation.asrApiKeyRequired", lang));
+    if (!config.apiKey) errors.push(t("validation.translationApiKeyRequired", lang));
+    if (!config.defaultInputDeviceId) errors.push(t("validation.selectInputDevice", lang));
+    if (errors.length > 0) {
+      setNotice(errors.join("; "));
+      return;
     }
 
     try {
       const record = await startSession({
         inputDeviceId: config.defaultInputDeviceId,
-        sourceLang: "en",
-        targetLang: "zh-CN",
+        sourceLang: config.sourceLang,
+        targetLang: config.targetLang,
         displayMode: config.displayMode,
         asrProvider: config.asrProvider,
         translationProvider: config.translationProvider,
@@ -280,15 +230,11 @@ function MainConsole() {
       setErrorLog([]);
       setDiagnostics({ droppedCount: 0, lowEnergyDrops: 0 });
       setActiveSession(record);
-      setNotice("同传会话已启动");
-    } catch (err: unknown) {
-      const message =
-        err instanceof TypeError
-          ? "Runtime 无响应，请检查端口 8765 或重启应用"
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      setNotice(`启动失败：${message}`);
+      setNotice(t("session.started", lang));
+    } catch (error) {
+      setNotice(
+        `${t("session.startFailed", lang)}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -298,13 +244,13 @@ function MainConsole() {
       setActiveSession(result);
     }
     setSessions(await getSessions());
-    setNotice("同传会话已停止并保存");
+    setNotice(t("session.stoppedAndSaved", lang));
   }
 
   async function handleSaveConfig() {
     const saved = await saveConfig(config);
     setConfig(normalizeConfig(saved));
-    setNotice("配置已保存");
+    setNotice(t("settings.saved", lang));
   }
 
   async function openFloatingWindow() {
@@ -319,7 +265,7 @@ function MainConsole() {
       }
       new WebviewWindow("floating-subtitles", {
         url: "/?view=floating",
-        title: "AI 同传字幕",
+        title: t("floating.windowTitle", lang),
         width: 960,
         height: 260,
         minWidth: 520,
@@ -341,9 +287,7 @@ function MainConsole() {
 
   async function addGlossaryTerm(event: FormEvent) {
     event.preventDefault();
-    if (!newTerm.source.trim() || !newTerm.target.trim()) {
-      return;
-    }
+    if (!newTerm.source.trim() || !newTerm.target.trim()) return;
     const created = await createGlossaryTerm({
       source: newTerm.source.trim(),
       target: newTerm.target.trim(),
@@ -371,12 +315,16 @@ function MainConsole() {
     setTestResult(null);
     try {
       const res = await testAsr(config);
-      setTestResult({ kind: "asr", ok: true, message: `连接正常：${res.base_url}` });
-    } catch (err) {
+      setTestResult({
+        kind: "asr",
+        ok: true,
+        message: `${t("test.connected", lang)}: ${res.base_url}`,
+      });
+    } catch (error) {
       setTestResult({
         kind: "asr",
         ok: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: error instanceof Error ? error.message : String(error),
       });
     } finally {
       setTesting(null);
@@ -391,13 +339,13 @@ function MainConsole() {
       setTestResult({
         kind: "translation",
         ok: true,
-        message: `连接正常，示例翻译：${res.sample}`,
+        message: `${t("test.connectedSample", lang)}: ${res.sample}`,
       });
-    } catch (err) {
+    } catch (error) {
       setTestResult({
         kind: "translation",
         ok: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: error instanceof Error ? error.message : String(error),
       });
     } finally {
       setTesting(null);
@@ -405,198 +353,197 @@ function MainConsole() {
   }
 
   const tabTitle: Record<Tab, string> = {
-    console: "实时同传控制台",
-    settings: "运行时与 AI 设置",
-    history: "会话历史",
-    glossary: "术语表管理",
+    console: t("tab.console", lang),
+    settings: t("tab.settings", lang),
+    history: t("tab.history", lang),
+    glossary: t("tab.glossary", lang),
   };
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">AI</span>
-          <div>
-            <strong>同声传译助手</strong>
-            <span>实时双语字幕工作台</span>
+    <LangProvider value={lang}>
+      <div className="app-shell">
+        <aside className="sidebar">
+          <div className="brand">
+            <img className="brand-logo" src={logoUrl} alt={t("brand.title", lang)} />
+            <div>
+              <strong>{t("brand.title", lang)}</strong>
+              <span>{t("brand.subtitle", lang)}</span>
+            </div>
           </div>
-        </div>
-        <nav className="nav-list">
-          <NavButton
-            active={tab === "console"}
-            icon={<Activity />}
-            label="控制台"
-            onClick={() => setTab("console")}
+          <nav className="nav-list">
+            <NavButton
+              active={tab === "console"}
+              icon={<Activity />}
+              label={t("nav.console", lang)}
+              onClick={() => setTab("console")}
+            />
+            <NavButton
+              active={tab === "settings"}
+              icon={<Settings />}
+              label={t("nav.settings", lang)}
+              onClick={() => setTab("settings")}
+            />
+            <NavButton
+              active={tab === "history"}
+              icon={<History />}
+              label={t("nav.history", lang)}
+              onClick={() => setTab("history")}
+            />
+            <NavButton
+              active={tab === "glossary"}
+              icon={<BookOpen />}
+              label={t("nav.glossary", lang)}
+              onClick={() => setTab("glossary")}
+            />
+          </nav>
+          <div className="runtime-card">
+            <span
+              className={`status-dot ${socketStatus === "connected" ? "connected" : socketStatus}`}
+            />
+            <div>
+              <strong>
+                {socketStatus === "connected"
+                  ? t("runtime.online", lang)
+                  : t("runtime.offline", lang)}
+              </strong>
+              <span>{notice}</span>
+            </div>
+          </div>
+        </aside>
+
+        <main className="workspace">
+          <UpdateBanner
+            status={updateStatus}
+            updateInfo={updateInfo}
+            progress={updateProgress}
+            error={updateError}
+            onUpdate={() => void downloadAndInstall()}
+            onDismiss={dismissUpdate}
           />
-          <NavButton
-            active={tab === "settings"}
-            icon={<Settings />}
-            label="设置"
-            onClick={() => setTab("settings")}
-          />
-          <NavButton
-            active={tab === "history"}
-            icon={<History />}
-            label="历史"
-            onClick={() => setTab("history")}
-          />
-          <NavButton
-            active={tab === "glossary"}
-            icon={<BookOpen />}
-            label="术语表"
-            onClick={() => setTab("glossary")}
-          />
-        </nav>
-        <div className="runtime-card">
-          <span
-            className={`status-dot ${socketStatus === "connected" && notice === "Runtime 已连接" ? "connected" : socketStatus}`}
-          />
-          <div>
-            <strong>
-              {notice === "Runtime 已连接"
-                ? "Runtime 在线"
-                : notice.startsWith("Runtime 启动中")
-                  ? "Runtime 启动中"
-                  : notice.includes("启动失败") || notice.includes("未就绪")
-                    ? "Runtime 离线"
-                    : socketStatus === "connected"
-                      ? "WebSocket 在线"
-                      : "WebSocket 离线"}
-            </strong>
-            <span>
-              {socketStatus === "disconnected" && reconnectAttempt > 0
-                ? `WebSocket 重连中 (${reconnectAttempt}/10)`
-                : notice}
-            </span>
-            {(notice.includes("启动失败") || notice.includes("未就绪")) && (
+          <header className="topbar">
+            <div>
+              <span className="eyebrow">{t("brand.sourceToTarget", lang)}</span>
+              <h1>{tabTitle[tab]}</h1>
+            </div>
+            <div className="topbar-actions">
               <button
-                className="restart-btn"
-                onClick={() => void handleRestartRuntime()}
-                disabled={restarting}
+                className="icon-button"
+                onClick={cycleLang}
+                title={lang === "zh" ? "EN" : "中文"}
+                aria-label={lang === "zh" ? "Switch to English" : "切换到中文"}
               >
-                {restarting ? "重启中..." : "重新启动"}
+                {lang === "zh" ? "EN" : "中"}
               </button>
-            )}
-          </div>
-        </div>
-      </aside>
+              <button
+                className="icon-button"
+                onClick={cycleTheme}
+                title={t(`theme.${theme}`, lang)}
+                aria-label={t(`theme.${theme}`, lang)}
+              >
+                {theme === "light" ? <Sun /> : theme === "dark" ? <Moon /> : <Monitor />}
+              </button>
+              <button
+                className="icon-button"
+                onClick={() => void bootstrap()}
+                title={t("runtime.refresh", lang)}
+              >
+                {socketStatus === "connected" ? <Wifi /> : <WifiOff />}
+              </button>
+              <button className="secondary-button" onClick={() => void openFloatingWindow()}>
+                <ExternalLink />
+                {t("floating.openButton", lang)}
+              </button>
+            </div>
+          </header>
 
-      <main className="workspace">
-        <UpdateBanner
-          status={updateStatus}
-          updateInfo={updateInfo}
-          progress={updateProgress}
-          error={updateError}
-          onUpdate={() => void downloadAndInstall()}
-          onDismiss={dismissUpdate}
-        />
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">EN TO ZH-CN</span>
-            <h1>{tabTitle[tab]}</h1>
-          </div>
-          <div className="topbar-actions">
-            <button
-              className="icon-button"
-              onClick={() => void bootstrap()}
-              title="刷新 Runtime 状态"
-            >
-              {socketStatus === "connected" ? <Wifi /> : <WifiOff />}
-            </button>
-            <button className="secondary-button" onClick={() => void openFloatingWindow()}>
-              <ExternalLink />
-              悬浮字幕
-            </button>
-          </div>
-        </header>
+          {tab === "console" && (
+            <section className="console-grid">
+              <ControlPanel
+                config={config}
+                setConfig={setConfig}
+                devices={devices}
+                isRunning={isRunning}
+                onStart={() => void handleStart()}
+                onStop={() => void handleStop()}
+                onClear={() => setSegments([])}
+              />
+              <SubtitlePanel
+                segments={segments}
+                displayMode={config.displayMode}
+                correctedIds={correctedIds}
+                sessionStatus={sessionStatus}
+                activeSessionTitle={activeSession?.title}
+                isRunning={isRunning}
+                asrProvider={config.asrProvider}
+                diagnostics={diagnostics}
+                diagnosticsEnabled={config.diagnosticsEnabled}
+                errorLog={errorLog}
+                fontSize={config.fontSize}
+              />
+              <div className="latest-panel">
+                <span className="eyebrow">{t("subtitle.latestStable", lang)}</span>
+                {visibleSegments.length > 0 ? (
+                  (() => {
+                    const latest =
+                      [...visibleSegments].reverse().find((s) => s.status !== "interim") ??
+                      visibleSegments[visibleSegments.length - 1];
+                    return (
+                      <>
+                        <p
+                          className="latest-source"
+                          style={{ fontSize: `${config.fontSize * 0.75}px` }}
+                        >
+                          {latest.sourceText}
+                        </p>
+                        <p
+                          className="latest-translation"
+                          style={{ fontSize: `${config.fontSize}px` }}
+                        >
+                          {latest.translatedText}
+                        </p>
+                      </>
+                    );
+                  })()
+                ) : (
+                  <p className="latest-placeholder">{t("subtitle.noStableSubtitles", lang)}</p>
+                )}
+              </div>
+            </section>
+          )}
 
-        {tab === "console" && (
-          <section className="console-grid">
-            <ControlPanel
+          {tab === "settings" && (
+            <SettingsPanel
               config={config}
               setConfig={setConfig}
-              devices={devices}
-              isRunning={isRunning}
-              onStart={() => void handleStart()}
-              onStop={() => void handleStop()}
-              onClear={() => setSegments([])}
+              testing={testing}
+              testResult={testResult}
+              onTestAsr={() => void handleTestAsr()}
+              onTestTranslation={() => void handleTestTranslation()}
+              onSave={() => void handleSaveConfig()}
             />
-            <SubtitlePanel
-              segments={segments}
-              displayMode={config.displayMode}
-              correctedIds={correctedIds}
-              sessionStatus={sessionStatus}
-              activeSessionTitle={activeSession?.title}
-              isRunning={isRunning}
-              asrProvider={config.asrProvider}
-              diagnostics={diagnostics}
-              diagnosticsEnabled={config.diagnosticsEnabled}
-              errorLog={errorLog}
-              fontSize={config.fontSize}
+          )}
+
+          {tab === "history" && (
+            <HistoryPanel
+              sessions={sessions}
+              selectedSessionId={selectedSessionId}
+              historySegments={historySegments}
+              onSelectSession={(id) => void loadHistory(id)}
             />
-            <div className="latest-panel">
-              <span className="eyebrow">Latest Stable</span>
-              {visibleSegments.length > 0 ? (
-                (() => {
-                  const latest =
-                    [...visibleSegments].reverse().find((s) => s.status !== "interim") ??
-                    visibleSegments[visibleSegments.length - 1];
-                  return (
-                    <>
-                      <p
-                        className="latest-source"
-                        style={{ fontSize: `${config.fontSize * 0.75}px` }}
-                      >
-                        {latest.sourceText}
-                      </p>
-                      <p
-                        className="latest-translation"
-                        style={{ fontSize: `${config.fontSize}px` }}
-                      >
-                        {latest.translatedText}
-                      </p>
-                    </>
-                  );
-                })()
-              ) : (
-                <p className="latest-placeholder">暂无稳定字幕。</p>
-              )}
-            </div>
-          </section>
-        )}
+          )}
 
-        {tab === "settings" && (
-          <SettingsPanel
-            config={config}
-            setConfig={setConfig}
-            testing={testing}
-            testResult={testResult}
-            onTestAsr={() => void handleTestAsr()}
-            onTestTranslation={() => void handleTestTranslation()}
-            onSave={() => void handleSaveConfig()}
-          />
-        )}
-
-        {tab === "history" && (
-          <HistoryPanel
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            historySegments={historySegments}
-            onSelectSession={(id) => void loadHistory(id)}
-          />
-        )}
-
-        {tab === "glossary" && (
-          <GlossaryPanel
-            glossary={glossary}
-            newTerm={newTerm}
-            setNewTerm={setNewTerm}
-            onAdd={(e) => void addGlossaryTerm(e)}
-            onToggle={(term) => void toggleGlossary(term)}
-            onRemove={(id) => void removeGlossaryTerm(id)}
-          />
-        )}
-      </main>
-    </div>
+          {tab === "glossary" && (
+            <GlossaryPanel
+              glossary={glossary}
+              newTerm={newTerm}
+              setNewTerm={setNewTerm}
+              onAdd={(event) => void addGlossaryTerm(event)}
+              onToggle={(term) => void toggleGlossary(term)}
+              onRemove={(id) => void removeGlossaryTerm(id)}
+            />
+          )}
+        </main>
+      </div>
+    </LangProvider>
   );
 }

@@ -87,34 +87,7 @@ export function useUpdateChecker() {
       });
 
       setStatus("ready");
-
-      let runtimeStopped = false;
-      try {
-        const { stopRuntime } = await import("../api");
-        await stopRuntime();
-        runtimeStopped = true;
-      } catch (e) {
-        throw Object.assign(
-          new Error(`Failed to stop runtime before installing update: ${toErrorMessage(e)}`),
-          { cause: e }
-        );
-      }
-
-      try {
-        await update.install();
-      } catch (installError) {
-        if (runtimeStopped) {
-          try {
-            const { restartRuntime } = await import("../api");
-            await restartRuntime();
-            runtimeStopped = false;
-          } catch (restartError) {
-            console.warn("restartRuntime failed after update install error:", restartError);
-          }
-        }
-        throw installError;
-      }
-
+      await update.install();
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (err: unknown) {
