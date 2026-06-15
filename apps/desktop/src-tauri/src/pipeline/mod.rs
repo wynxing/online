@@ -132,7 +132,7 @@ impl PipelineManager {
     }
 
     pub fn is_running(&self) -> bool {
-        self.inner.lock().ok().map_or(false, |g| g.is_some())
+        self.inner.lock().ok().is_some_and(|g| g.is_some())
     }
 
     pub fn start(
