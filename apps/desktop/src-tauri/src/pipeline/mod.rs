@@ -337,11 +337,12 @@ async fn run_pipeline(
         _ = token.cancelled() => {}
     }
 
-    let _ = segmenter.await;
-    let _ = asr.await;
-    let _ = dispatcher.await;
-    let _ = reorder.await;
-    let _ = monitor.await;
+    let join_timeout = std::time::Duration::from_secs(8);
+    let _ = tokio::time::timeout(join_timeout, segmenter).await;
+    let _ = tokio::time::timeout(join_timeout, asr).await;
+    let _ = tokio::time::timeout(join_timeout, dispatcher).await;
+    let _ = tokio::time::timeout(join_timeout, reorder).await;
+    let _ = tokio::time::timeout(join_timeout, monitor).await;
     emit_status(&app, Some(session_id), "stopped");
     Ok(())
 }
@@ -506,9 +507,11 @@ async fn asr_task(
     let recent_source: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let worker_id_counter = Arc::new(AtomicU64::new(0));
     let consecutive_empty = Arc::new(AtomicU32::new(0));
+    let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
     while let Some(segment) = rx.recv().await {
-        let _ = segment_queue_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
+        let _ = segment_queue_depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
         if token.is_cancelled() {
             break;
         }
@@ -536,7 +539,7 @@ async fn asr_task(
         let segment_queue_depth = segment_queue_depth.clone();
         let worker_id = worker_id_counter.fetch_add(1, Ordering::Relaxed);
 
-        tokio::spawn(async move {
+        workers.push(tokio::spawn(async move {
             let queue_lag_ms = segment.created_at.elapsed().as_secs_f32() * 1000.0;
             let started = Instant::now();
             let (prepared, prep_ch, prep_rate) =
@@ -626,7 +629,12 @@ async fn asr_task(
                 }
             }
             drop(permit);
-        });
+        }));
+    }
+
+    // Wait for in-flight ASR workers to finish, abort stragglers.
+    for handle in workers {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     }
 }
 
@@ -702,6 +710,7 @@ async fn translation_dispatcher(
     let translation = Arc::new(translation);
     let glossary = Arc::new(glossary);
     let worker_id_counter = Arc::new(AtomicU64::new(0));
+    let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
     while let Some(segment) = rx.recv().await {
         if token.is_cancelled() {
@@ -738,7 +747,7 @@ async fn translation_dispatcher(
         let glossary = glossary.clone();
         let _worker_id = worker_id_counter.fetch_add(1, Ordering::Relaxed);
 
-        tokio::spawn(async move {
+        workers.push(tokio::spawn(async move {
             let seq = extract_sequence(&segment.id);
             let started = Instant::now();
 
@@ -795,7 +804,12 @@ async fn translation_dispatcher(
                 }
             }
             drop(permit);
-        });
+        }));
+    }
+
+    // Wait for in-flight translation workers to finish, abort stragglers.
+    for handle in workers {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     }
 }
 
