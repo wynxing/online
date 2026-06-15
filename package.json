@@ -7,7 +7,7 @@
   "scripts": {
     "desktop": "npm run dev -w apps/desktop",
     "desktop:build": "npm run build -w apps/desktop",
-    "tauri": "npm run tauri -w apps/desktop",
+    "tauri": "npm run tauri -w apps/desktop --",
     "tauri:dev": "npm run tauri:dev -w apps/desktop",
     "release:local": "node scripts/build-release-local.mjs",
     "lint": "npm run lint -w apps/desktop",
