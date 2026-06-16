@@ -6,6 +6,8 @@ use std::{
     time::Instant,
 };
 
+mod audio_dsp;
+
 use earshot::Detector;
 use regex::Regex;
 
@@ -35,10 +37,14 @@ const METRICS_THROTTLE_MS: u64 = 300;
 const SILENCE_RMS_THRESHOLD: f32 = 90.0;
 
 /// Segments waiting longer than this in the ASR input queue are dropped.
-const ASR_STALE_SECS: f32 = 12.0;
+const ASR_STALE_SECS: f32 = 20.0;
 
 /// Segments waiting longer than this in the translation input queue are dropped.
-const TRANSLATION_STALE_SECS: f32 = 10.0;
+const TRANSLATION_STALE_SECS: f32 = 15.0;
+
+/// Factor over `segment_max_duration` beyond which a segment is considered
+/// malformed (segmenter failed to cut properly) and is dropped before ASR.
+const ASR_MAX_SEGMENT_DURATION_FACTOR: f32 = 1.2;
 
 /// Maximum wait for a missing sequence number before skipping (aligns with Python
 /// TRANSLATION_REORDER_WAIT_SECONDS = 1.2s). The previous 100 ms was too aggressive
@@ -273,7 +279,7 @@ async fn run_pipeline(
     emit_status(&app, Some(session_id.clone()), "running");
 
     let (audio_tx, audio_rx) = mpsc::channel::<AudioFrame>(64);
-    let (segment_tx, segment_rx) = mpsc::channel::<AudioSegment>(16);
+    let (segment_tx, segment_rx) = mpsc::channel::<AudioSegment>(32);
     let (asr_tx, asr_rx) = mpsc::channel::<RecognizedSegment>(32);
     let capture_token = token.clone();
     let capture_device = request.input_device_id.clone();
@@ -306,6 +312,7 @@ async fn run_pipeline(
         app.clone(),
         session_id.clone(),
         segment_queue_depth.clone(),
+        config.segment_max_duration,
     ));
 
     let (reorder_tx, reorder_rx) = mpsc::channel::<TranslatedSegment>(32);
@@ -442,10 +449,10 @@ async fn segmenter_task(
 ) {
     let mut sample_rate = 48_000u32;
     let mut channels = 1u16;
-    let mut min_samples =
-        (sample_rate as f32 * config.segment_min_duration) as usize * channels as usize;
-    let mut max_samples =
-        (sample_rate as f32 * config.segment_max_duration) as usize * channels as usize;
+    // Buffer always stores 16 kHz mono (preprocessed) samples.
+    const TARGET_RATE: u32 = 16_000;
+    let min_samples = (TARGET_RATE as f32 * config.segment_min_duration) as usize;
+    let max_samples = (TARGET_RATE as f32 * config.segment_max_duration) as usize;
     let mut buffer = Vec::<i16>::with_capacity(max_samples);
     let mut index = 0u64;
     let mut stream_time = 0.0f32;
@@ -461,6 +468,9 @@ async fn segmenter_task(
     // Scratch buffer for mono 16 KHz samples fed to VAD.
     let mut vad_buf = Vec::<i16>::with_capacity(VAD_FRAME_SIZE * 2);
 
+    // Audio preprocessor: persists RNN denoise state + sinc resampler across frames.
+    let mut preprocessor = audio_dsp::AudioPreprocessor::new();
+
     loop {
         tokio::select! {
             _ = token.cancelled() => break,
@@ -469,54 +479,44 @@ async fn segmenter_task(
                 if frame.sample_rate != sample_rate || frame.channels != channels {
                     sample_rate = frame.sample_rate;
                     channels = frame.channels;
-                    min_samples = (sample_rate as f32 * config.segment_min_duration) as usize * channels as usize;
-                    max_samples = (sample_rate as f32 * config.segment_max_duration) as usize * channels as usize;
-                    if buffer.capacity() < max_samples {
-                        buffer.reserve(max_samples - buffer.capacity());
-                    }
+                    // min/max_samples are in 16 kHz mono units — unchanged.
                     vad.reset();
+                    preprocessor.reset();
                     consecutive_silence = 0;
                 }
                 frames += 1;
                 frame_counter.fetch_add(1, Ordering::Relaxed);
                 stream_time += frame.samples.len() as f32 / (sample_rate as f32 * channels as f32);
 
-                // --- VAD: process new samples before appending to buffer ---
-                if config.vad_enabled {
-                    // Mix down to mono if multi-channel.
-                    let mono: Vec<i16> = if channels == 1 {
-                        frame.samples.clone()
+                // --- Audio preprocessing: denoise → mono → resample ---
+                // Denoise and resample use persistent state across frames.
+                // Peak normalization is applied per-segment (not per-frame)
+                // to avoid pumping artifacts.
+                let processed = preprocessor.process(
+                    &frame.samples,
+                    sample_rate,
+                    channels,
+                    &config,
+                );
+
+                // Feed into VAD scratch buffer, process in 256-sample chunks.
+                // earshot's predict_i16 copies the frame into its internal
+                // ring buffer, so we can hand it a slice of the scratch
+                // buffer directly and drain afterwards — no per-frame Vec.
+                vad_buf.extend(&processed);
+                while vad_buf.len() >= VAD_FRAME_SIZE {
+                    let score = vad.predict_i16(&vad_buf[..VAD_FRAME_SIZE]);
+                    if score < 0.5 {
+                        consecutive_silence += 1;
                     } else {
-                        frame.samples
-                            .chunks(channels as usize)
-                            .map(|ch| {
-                                let sum: i32 = ch.iter().map(|s| *s as i32).sum();
-                                (sum / channels as i32) as i16
-                            })
-                            .collect()
-                    };
-                    // Resample to 16 KHz if needed.
-                    let resampled = resample_to_16k(&mono, sample_rate);
-                    // Feed into VAD scratch buffer, process in 256-sample chunks.
-                    // earshot's predict_i16 copies the frame into its internal
-                    // ring buffer, so we can hand it a slice of the scratch
-                    // buffer directly and drain afterwards — no per-frame Vec.
-                    vad_buf.extend(resampled.as_ref());
-                    while vad_buf.len() >= VAD_FRAME_SIZE {
-                        let score = vad.predict_i16(&vad_buf[..VAD_FRAME_SIZE]);
-                        if score < 0.5 {
-                            consecutive_silence += 1;
-                        } else {
-                            consecutive_silence = 0;
-                        }
-                        vad_buf.drain(..VAD_FRAME_SIZE);
+                        consecutive_silence = 0;
                     }
+                    vad_buf.drain(..VAD_FRAME_SIZE);
                 }
 
-                buffer.extend(frame.samples);
-                // `frame_rms` is only used in legacy mode (RMS-based silence
-                // gate + diagnostic metric). In VAD mode the buffer RMS is
-                // unused, so skip the O(n) walk over the whole buffer.
+                buffer.extend(processed);
+                // Compute buffer RMS for diagnostic metrics.
+                // Segment-level RMS is computed at cut time (see below).
                 let frame_rms: Option<f32> = if config.vad_enabled {
                     None
                 } else {
@@ -566,24 +566,27 @@ async fn segmenter_task(
                 };
 
                 if should_cut {
-                    // In legacy mode, apply RMS silence gate to discard noise-only buffers.
-                    if let Some(rms_val) = frame_rms {
-                        if rms_val < SILENCE_RMS_THRESHOLD {
-                            buffer.clear();
-                            segment_start = stream_time;
-                            low_energy_drops += 1;
-                            consecutive_silence = 0;
-                            continue;
-                        }
+                    // Apply RMS silence gate in all modes to discard noise-only buffers.
+                    let buf_rms = rms(&buffer);
+                    if buf_rms < SILENCE_RMS_THRESHOLD {
+                        buffer.clear();
+                        segment_start = stream_time;
+                        low_energy_drops += 1;
+                        consecutive_silence = 0;
+                        continue;
                     }
-                    let samples = std::mem::take(&mut buffer);
+                    // Apply peak normalization per-segment to avoid pumping artifacts.
+                    let mut samples = std::mem::take(&mut buffer);
+                    if config.audio_peak_normalize_enabled {
+                        samples = audio_dsp::peak_normalize(&samples);
+                    }
                     if !emit_audio_segment(
                         &tx,
                         &mut index,
                         &mut segment_start,
                         stream_time,
-                        sample_rate,
-                        channels,
+                        TARGET_RATE,
+                        1,
                         samples,
                         &segment_counter,
                         &segment_queue_depth,
@@ -598,23 +601,25 @@ async fn segmenter_task(
 
                 // Fallback: force-cut if buffer exceeds max duration regardless of VAD.
                 if buffer.len() >= max_samples {
-                    if let Some(rms_val) = frame_rms {
-                        if rms_val < SILENCE_RMS_THRESHOLD {
-                            buffer.clear();
-                            segment_start = stream_time;
-                            low_energy_drops += 1;
-                            consecutive_silence = 0;
-                            continue;
-                        }
+                    let buf_rms = rms(&buffer);
+                    if buf_rms < SILENCE_RMS_THRESHOLD {
+                        buffer.clear();
+                        segment_start = stream_time;
+                        low_energy_drops += 1;
+                        consecutive_silence = 0;
+                        continue;
                     }
-                    let samples = std::mem::take(&mut buffer);
+                    let mut samples = std::mem::take(&mut buffer);
+                    if config.audio_peak_normalize_enabled {
+                        samples = audio_dsp::peak_normalize(&samples);
+                    }
                     if !emit_audio_segment(
                         &tx,
                         &mut index,
                         &mut segment_start,
                         stream_time,
-                        sample_rate,
-                        channels,
+                        TARGET_RATE,
+                        1,
                         samples,
                         &segment_counter,
                         &segment_queue_depth,
@@ -632,14 +637,17 @@ async fn segmenter_task(
 
     // Flush remaining buffer as a final segment on pipeline end.
     if !buffer.is_empty() {
-        let samples = std::mem::take(&mut buffer);
+        let mut samples = std::mem::take(&mut buffer);
+        if config.audio_peak_normalize_enabled {
+            samples = audio_dsp::peak_normalize(&samples);
+        }
         let _ = emit_audio_segment(
             &tx,
             &mut index,
             &mut segment_start,
             stream_time,
-            sample_rate,
-            channels,
+            TARGET_RATE,
+            1,
             samples,
             &segment_counter,
             &segment_queue_depth,
@@ -660,11 +668,13 @@ async fn asr_task(
     app: AppHandle,
     session_id: String,
     segment_queue_depth: Arc<AtomicUsize>,
+    max_segment_duration: f32,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let recent_source: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let worker_id_counter = Arc::new(AtomicU64::new(0));
     let consecutive_empty = Arc::new(AtomicU32::new(0));
+    let consecutive_hallucination = Arc::new(AtomicU32::new(0));
     let mut workers: Vec<JoinHandle<()>> = Vec::new();
 
     while let Some(segment) = rx.recv().await {
@@ -686,6 +696,22 @@ async fn asr_task(
             continue;
         }
 
+        // Drop segments that are unreasonably long — indicates segmenter
+        // failed to cut (e.g. VAD missed silence). ASR on these produces
+        // garbled concatenated output.
+        let audio_duration = segment.end_time - segment.start_time;
+        let max_allowed = max_segment_duration * ASR_MAX_SEGMENT_DURATION_FACTOR;
+        if audio_duration > max_allowed {
+            tracing::warn!(
+                segment = %segment.id,
+                duration_ms = (audio_duration * 1000.0) as u64,
+                max_ms = (max_allowed * 1000.0) as u64,
+                "Drop oversized ASR segment (segmenter missed cut)"
+            );
+            emit_drop_metrics(&app, &session_id, &segment.id, "asr_oversized", queue_lag);
+            continue;
+        }
+
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let asr = asr.clone();
         let tx = tx.clone();
@@ -694,6 +720,7 @@ async fn asr_task(
         let session_id = session_id.clone();
         let recent_source = recent_source.clone();
         let consecutive_empty = consecutive_empty.clone();
+        let consecutive_hallucination = consecutive_hallucination.clone();
         let segment_queue_depth = segment_queue_depth.clone();
         let worker_id = worker_id_counter.fetch_add(1, Ordering::Relaxed);
 
@@ -706,6 +733,32 @@ async fn asr_task(
             let prompt = recent_source.lock().unwrap().clone();
             match asr.transcribe(wav, prompt.as_deref()).await {
                 Ok(source_text) if !source_text.is_empty() => {
+                    // Check for Whisper hallucination (repeating the prompt).
+                    let is_hallucination = {
+                        let recent = recent_source.lock().unwrap();
+                        is_likely_hallucination(&source_text, &recent)
+                    };
+                    if is_hallucination {
+                        let count = consecutive_hallucination.fetch_add(1, Ordering::Relaxed) + 1;
+                        tracing::debug!(
+                            segment = %segment.id,
+                            text = %source_text,
+                            count,
+                            "Drop suspected ASR hallucination (repeats prompt)"
+                        );
+                        // Don't update recent_source — break the feedback loop.
+                        if count >= 3 && !token.is_cancelled() {
+                            emit_error(
+                                &app,
+                                "ASR_HALLUCINATION",
+                                "ASR repeatedly echoes previous text. The audio source may contain music or non-speech content.",
+                                true,
+                            );
+                            consecutive_hallucination.store(0, Ordering::Relaxed);
+                        }
+                        return;
+                    }
+                    consecutive_hallucination.store(0, Ordering::Relaxed);
                     consecutive_empty.store(0, Ordering::Relaxed);
                     let asr_ms = started.elapsed().as_secs_f32() * 1000.0;
                     let interim = SubtitleSegment {
@@ -1325,34 +1378,55 @@ fn rms(samples: &[i16]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
-/// Downsamples mono i16 audio from `src_rate` to 16 KHz by nearest-neighbor
-/// sampling. For 48 KHz → 16 KHz this picks every 3rd sample; for 44.1 KHz it
-/// uses linear interpolation. Returns an empty slice if `src_rate` is 0 or
-/// `samples` is empty. The 16 KHz fast path returns a borrow of the input to
-/// avoid an unnecessary copy on the common case.
-fn resample_to_16k(samples: &[i16], src_rate: u32) -> std::borrow::Cow<'_, [i16]> {
-    if src_rate == 0 || samples.is_empty() {
-        return std::borrow::Cow::Borrowed(&[]);
+/// Checks whether the ASR output is likely a Whisper hallucination by
+/// comparing it with the previous transcription used as prompt.
+///
+/// Whisper's known behavior: when the input audio contains no intelligible
+/// speech (e.g. background music), it tends to echo the `prompt` parameter
+/// verbatim or with minor truncation. This creates a feedback loop where
+/// the hallucinated text becomes the next prompt, causing indefinite
+/// repetition of the last real phrase.
+fn is_likely_hallucination(new_text: &str, recent_source: &Option<String>) -> bool {
+    let Some(prev) = recent_source else {
+        return false;
+    };
+
+    let norm_new: String = new_text
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let norm_prev: String = prev
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if norm_new.is_empty() || norm_prev.is_empty() {
+        return false;
     }
-    if src_rate == 16_000 {
-        return std::borrow::Cow::Borrowed(samples);
+
+    // Exact match after normalization → definitely hallucination.
+    if norm_new == norm_prev {
+        return true;
     }
-    let ratio = src_rate as f64 / 16_000.0;
-    let out_len = (samples.len() as f64 / ratio).ceil() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for i in 0..out_len {
-        let pos = i as f64 * ratio;
-        let idx = pos as usize;
-        let frac = pos - idx as f64;
-        if idx + 1 < samples.len() && frac > 0.01 {
-            // Linear interpolation between adjacent samples.
-            let val = samples[idx] as f64 * (1.0 - frac) + samples[idx + 1] as f64 * frac;
-            out.push(val.round() as i16);
-        } else if idx < samples.len() {
-            out.push(samples[idx]);
+
+    // Substring containment with high length ratio → likely hallucination.
+    // Whisper often echoes the prompt verbatim or with minor truncation.
+    let (shorter, longer) = if norm_new.len() < norm_prev.len() {
+        (&norm_new, &norm_prev)
+    } else {
+        (&norm_prev, &norm_new)
+    };
+
+    if longer.contains(shorter.as_str()) {
+        let ratio = shorter.len() as f32 / longer.len() as f32;
+        if ratio > 0.6 {
+            return true;
         }
     }
-    std::borrow::Cow::Owned(out)
+
+    false
 }
 
 fn emit_status(app: &AppHandle, session_id: Option<String>, status: &str) {
@@ -1559,42 +1633,67 @@ mod tests {
         );
     }
 
-    // --- VAD / resample tests ---
+    // --- Hallucination detection tests ---
 
     #[test]
-    fn resample_identity_at_16k() {
-        let samples: Vec<i16> = (0..512).map(|i| i as i16).collect();
-        let out = resample_to_16k(&samples, 16_000);
-        // 16 KHz fast path must be a borrow, not a copy.
-        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
-        assert_eq!(out.as_ref(), samples.as_slice());
+    fn hallucination_exact_match() {
+        assert!(is_likely_hallucination("Hello world", &Some("Hello world".into())));
     }
 
     #[test]
-    fn resample_48k_to_16k_length() {
-        // 48 KHz → 16 KHz: ratio 3, so output length = input / 3.
-        let samples: Vec<i16> = (0..480).map(|i| i as i16).collect();
-        let out = resample_to_16k(&samples, 48_000);
-        assert_eq!(out.len(), 160);
-        // Every 3rd sample should match (nearest-neighbor).
-        assert_eq!(out[0], samples[0]);
-        assert_eq!(out[1], samples[3]);
-        assert_eq!(out[2], samples[6]);
+    fn hallucination_case_insensitive_match() {
+        assert!(is_likely_hallucination("hello world", &Some("Hello World".into())));
     }
 
     #[test]
-    fn resample_44100_to_16k_interpolates() {
-        let samples: Vec<i16> = (0..441).map(|i| i as i16).collect();
-        let out = resample_to_16k(&samples, 44_100);
-        // 441 / (44100/16000) ≈ 160
-        assert!((159..=161).contains(&out.len()));
+    fn hallucination_whitespace_normalization() {
+        assert!(is_likely_hallucination("Hello  world", &Some("Hello world".into())));
     }
 
     #[test]
-    fn resample_empty_or_zero_rate() {
-        assert!(resample_to_16k(&[], 48_000).is_empty());
-        assert!(resample_to_16k(&[1, 2, 3], 0).is_empty());
+    fn hallucination_substring_high_ratio() {
+        // Shorter text is a large substring of longer → hallucination.
+        // "The quick brown fox jumps" is 24 chars, full is 44 chars → ratio 0.54.
+        // Need ratio > 0.6, so use a longer prefix.
+        assert!(is_likely_hallucination(
+            "The quick brown fox jumps over the lazy",
+            &Some("The quick brown fox jumps over the lazy dog".into())
+        ));
     }
+
+    #[test]
+    fn hallucination_different_text_not_flagged() {
+        assert!(!is_likely_hallucination("Completely different content", &Some("Hello world".into())));
+    }
+
+    #[test]
+    fn hallucination_short_overlap_not_flagged() {
+        // Small common substring should not trigger.
+        assert!(!is_likely_hallucination("The meeting", &Some("The quick brown fox jumps".into())));
+    }
+
+    #[test]
+    fn hallucination_none_recent_source() {
+        assert!(!is_likely_hallucination("Hello world", &None));
+    }
+
+    #[test]
+    fn hallucination_cjk_exact_match() {
+        assert!(is_likely_hallucination("你好世界", &Some("你好世界".into())));
+    }
+
+    #[test]
+    fn hallucination_cjk_different_not_flagged() {
+        assert!(!is_likely_hallucination("今天天气很好", &Some("你好世界".into())));
+    }
+
+    #[test]
+    fn hallucination_empty_strings() {
+        assert!(!is_likely_hallucination("", &Some("Hello".into())));
+        assert!(!is_likely_hallucination("Hello", &Some("".into())));
+    }
+
+    // --- VAD tests ---
 
     #[test]
     fn vad_silence_frames_threshold_calculation() {

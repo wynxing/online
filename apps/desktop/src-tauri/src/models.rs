@@ -60,6 +60,9 @@ pub struct RuntimeConfig {
     pub segment_silence_duration: f32,
     pub vad_enabled: bool,
     pub diagnostics_enabled: bool,
+    pub audio_denoise_enabled: bool,
+    pub audio_peak_normalize_enabled: bool,
+    pub audio_resample_quality: String,
 }
 
 impl fmt::Debug for RuntimeConfig {
@@ -88,6 +91,9 @@ impl fmt::Debug for RuntimeConfig {
             .field("segment_silence_duration", &self.segment_silence_duration)
             .field("vad_enabled", &self.vad_enabled)
             .field("diagnostics_enabled", &self.diagnostics_enabled)
+            .field("audio_denoise_enabled", &self.audio_denoise_enabled)
+            .field("audio_peak_normalize_enabled", &self.audio_peak_normalize_enabled)
+            .field("audio_resample_quality", &self.audio_resample_quality)
             .finish()
     }
 }
@@ -111,13 +117,16 @@ impl Default for RuntimeConfig {
             source_lang: "en".into(),
             target_lang: "zh-CN".into(),
             asr_format: "whisper".into(),
-            asr_concurrency: 2,
-            translation_concurrency: 3,
+            asr_concurrency: 4,
+            translation_concurrency: 4,
             segment_min_duration: 0.6,
             segment_max_duration: 3.0,
             segment_silence_duration: 0.4,
             vad_enabled: true,
             diagnostics_enabled: true,
+            audio_denoise_enabled: true,
+            audio_peak_normalize_enabled: true,
+            audio_resample_quality: "fast".into(),
         }
     }
 }
@@ -147,6 +156,9 @@ impl RuntimeConfig {
         self.segment_silence_duration = self.segment_silence_duration.clamp(0.15, 3.0);
         if self.segment_min_duration >= self.segment_max_duration {
             self.segment_min_duration = self.segment_max_duration * 0.5;
+        }
+        if self.audio_resample_quality != "fast" && self.audio_resample_quality != "high" {
+            self.audio_resample_quality = "fast".into();
         }
         self
     }

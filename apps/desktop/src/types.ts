@@ -37,6 +37,9 @@ export interface RuntimeConfig {
   segmentSilenceDuration: number;
   vadEnabled: boolean;
   diagnosticsEnabled: boolean;
+  audioDenoiseEnabled: boolean;
+  audioPeakNormalizeEnabled: boolean;
+  audioResampleQuality: string;
 }
 
 export interface SubtitleSegment {

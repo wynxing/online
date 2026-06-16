@@ -73,6 +73,9 @@ const defaultConfig: RuntimeConfig = {
   segmentSilenceDuration: 0.35,
   vadEnabled: true,
   diagnosticsEnabled: true,
+  audioDenoiseEnabled: true,
+  audioPeakNormalizeEnabled: true,
+  audioResampleQuality: "fast",
 };
 
 function normalizeConfig(config: RuntimeConfig): RuntimeConfig {

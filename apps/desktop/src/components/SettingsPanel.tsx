@@ -232,6 +232,48 @@ export function SettingsPanel({
 
         <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
           <div>
+            <span className="eyebrow">{t("settings.audioPreprocessing", lang)}</span>
+            <h2>{t("settings.audioPreprocessing", lang)}</h2>
+          </div>
+          <SlidersHorizontal />
+        </div>
+        <div className="settings-columns">
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={config.audioDenoiseEnabled}
+              onChange={(event) =>
+                setConfig({ ...config, audioDenoiseEnabled: event.target.checked })
+              }
+            />
+            <span>{t("settings.audioDenoise", lang)}</span>
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={config.audioPeakNormalizeEnabled}
+              onChange={(event) =>
+                setConfig({ ...config, audioPeakNormalizeEnabled: event.target.checked })
+              }
+            />
+            <span>{t("settings.audioPeakNormalize", lang)}</span>
+          </label>
+          <label className="field">
+            <span>{t("settings.audioResampleQuality", lang)}</span>
+            <select
+              value={config.audioResampleQuality}
+              onChange={(event) =>
+                setConfig({ ...config, audioResampleQuality: event.target.value })
+              }
+            >
+              <option value="fast">{t("settings.audioResampleQualityFast", lang)}</option>
+              <option value="high">{t("settings.audioResampleQualityHigh", lang)}</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="panel-heading" style={{ marginTop: "1.5rem" }}>
+          <div>
             <span className="eyebrow">{t("settings.displaySection", lang)}</span>
             <h2>{t("settings.subtitleDisplay", lang)}</h2>
           </div>
