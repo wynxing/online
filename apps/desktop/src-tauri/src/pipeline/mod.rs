@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 
+use earshot::Detector;
 use regex::Regex;
 
 use tauri::{AppHandle, Emitter};
@@ -69,22 +70,37 @@ static RE_SPACE_BEFORE_PUNCT: LazyLock<Regex> =
 /// Regex: multiple whitespace.
 static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
+/// Regex: short numbered prefix fragments such as "10." that should not be
+/// treated as a complete sentence when followed by more text.
+static RE_NUMBERED_PREFIX_FRAGMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{1,3}[.):]?$").unwrap());
+
+fn is_standalone_numbered_prefix(text: &str) -> bool {
+    RE_NUMBERED_PREFIX_FRAGMENT.is_match(text.trim())
+}
+
+fn is_numbered_prefix_fragment(fragment: &str, remainder: &str) -> bool {
+    !remainder.is_empty() && is_standalone_numbered_prefix(fragment)
+}
+
 fn is_sentence_complete(source_text: &str) -> bool {
     let text = source_text.trim();
     if RE_SENTENCE_END.is_match(text) {
-        return true;
+        return !is_standalone_numbered_prefix(text);
     }
     text.chars().count() > 80 && RE_LONG_SEGMENT_BOUNDARY.is_match(text)
 }
 
 fn split_first_sentence(source_text: &str) -> (Option<String>, String) {
     let text = source_text.trim();
-    if let Some(m) = RE_SENTENCE_BOUNDARY.find(text) {
+    for m in RE_SENTENCE_BOUNDARY.find_iter(text) {
         let end = m.end();
-        return (
-            Some(text[..end].trim().to_string()),
-            text[end..].trim().to_string(),
-        );
+        let first = text[..end].trim();
+        let remainder = text[end..].trim();
+        if is_numbered_prefix_fragment(first, remainder) {
+            continue;
+        }
+        return (Some(first.to_string()), remainder.to_string());
     }
     if text.chars().count() > 80 {
         if let Some(m) = RE_LONG_SEGMENT_BOUNDARY.find(text) {
@@ -368,6 +384,50 @@ struct RecognizedSegment {
     created_at: Instant,
 }
 
+/// Earshot VAD requires exactly 256 samples at 16 KHz (16 ms per frame).
+const VAD_FRAME_SIZE: usize = 256;
+
+/// Builds an [`AudioSegment`] from the current `buffer`, advances segment
+/// bookkeeping, resets the VAD detector, and sends the segment downstream.
+///
+/// Returns `true` if the segment was sent successfully, `false` if the
+/// receiver was dropped (caller should break the loop).
+#[allow(clippy::too_many_arguments)]
+async fn emit_audio_segment(
+    tx: &mpsc::Sender<AudioSegment>,
+    index: &mut u64,
+    segment_start: &mut f32,
+    stream_time: f32,
+    sample_rate: u32,
+    channels: u16,
+    samples: Vec<i16>,
+    segment_counter: &Arc<AtomicU64>,
+    segment_queue_depth: &Arc<AtomicUsize>,
+    consecutive_silence: &mut u32,
+    vad: &mut Detector,
+) -> bool {
+    *index += 1;
+    let segment = AudioSegment {
+        id: format!("seg_{index:06}"),
+        samples,
+        sample_rate,
+        channels,
+        start_time: *segment_start,
+        end_time: stream_time,
+        created_at: Instant::now(),
+    };
+    *segment_start = stream_time;
+    *consecutive_silence = 0;
+    // earshot's internal ring buffer (768 samples) spans across segment
+    // boundaries otherwise, which can smear energy features from a previous
+    // segment's tail into the next one's first ~50ms. The detector docs
+    // recommend reset() when starting a new audio sequence.
+    vad.reset();
+    segment_counter.fetch_add(1, Ordering::Relaxed);
+    segment_queue_depth.fetch_add(1, Ordering::Relaxed);
+    tx.send(segment).await.is_ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn segmenter_task(
     mut rx: mpsc::Receiver<AudioFrame>,
@@ -380,8 +440,8 @@ async fn segmenter_task(
     segment_counter: Arc<AtomicU64>,
     segment_queue_depth: Arc<AtomicUsize>,
 ) {
-    let mut sample_rate = 48_000;
-    let mut channels = 1;
+    let mut sample_rate = 48_000u32;
+    let mut channels = 1u16;
     let mut min_samples =
         (sample_rate as f32 * config.segment_min_duration) as usize * channels as usize;
     let mut max_samples =
@@ -393,6 +453,13 @@ async fn segmenter_task(
     let mut frames = 0u64;
     let mut low_energy_drops = 0u64;
     let mut last_metrics_emit = Instant::now();
+
+    // VAD state.
+    let mut vad = Detector::default_boxed();
+    let silence_frames_threshold = (config.segment_silence_duration / 0.016).ceil() as u32;
+    let mut consecutive_silence: u32 = 0;
+    // Scratch buffer for mono 16 KHz samples fed to VAD.
+    let mut vad_buf = Vec::<i16>::with_capacity(VAD_FRAME_SIZE * 2);
 
     loop {
         tokio::select! {
@@ -407,12 +474,54 @@ async fn segmenter_task(
                     if buffer.capacity() < max_samples {
                         buffer.reserve(max_samples - buffer.capacity());
                     }
+                    vad.reset();
+                    consecutive_silence = 0;
                 }
                 frames += 1;
                 frame_counter.fetch_add(1, Ordering::Relaxed);
                 stream_time += frame.samples.len() as f32 / (sample_rate as f32 * channels as f32);
+
+                // --- VAD: process new samples before appending to buffer ---
+                if config.vad_enabled {
+                    // Mix down to mono if multi-channel.
+                    let mono: Vec<i16> = if channels == 1 {
+                        frame.samples.clone()
+                    } else {
+                        frame.samples
+                            .chunks(channels as usize)
+                            .map(|ch| {
+                                let sum: i32 = ch.iter().map(|s| *s as i32).sum();
+                                (sum / channels as i32) as i16
+                            })
+                            .collect()
+                    };
+                    // Resample to 16 KHz if needed.
+                    let resampled = resample_to_16k(&mono, sample_rate);
+                    // Feed into VAD scratch buffer, process in 256-sample chunks.
+                    // earshot's predict_i16 copies the frame into its internal
+                    // ring buffer, so we can hand it a slice of the scratch
+                    // buffer directly and drain afterwards — no per-frame Vec.
+                    vad_buf.extend(resampled.as_ref());
+                    while vad_buf.len() >= VAD_FRAME_SIZE {
+                        let score = vad.predict_i16(&vad_buf[..VAD_FRAME_SIZE]);
+                        if score < 0.5 {
+                            consecutive_silence += 1;
+                        } else {
+                            consecutive_silence = 0;
+                        }
+                        vad_buf.drain(..VAD_FRAME_SIZE);
+                    }
+                }
+
                 buffer.extend(frame.samples);
-                let frame_rms = rms(&buffer);
+                // `frame_rms` is only used in legacy mode (RMS-based silence
+                // gate + diagnostic metric). In VAD mode the buffer RMS is
+                // unused, so skip the O(n) walk over the whole buffer.
+                let frame_rms: Option<f32> = if config.vad_enabled {
+                    None
+                } else {
+                    Some(rms(&buffer))
+                };
 
                 // Throttle metrics to avoid flooding the IPC channel.
                 if last_metrics_emit.elapsed().as_millis() >= METRICS_THROTTLE_MS as u128 {
@@ -438,35 +547,82 @@ async fn segmenter_task(
                         frames: Some(frames),
                         segments: Some(index),
                         low_energy_drops: Some(low_energy_drops),
-                        last_frame_rms: Some(frame_rms),
-                        max_frame_rms: Some(frame_rms),
+                        last_frame_rms: frame_rms,
+                        max_frame_rms: frame_rms,
                         last_segment_rms: None,
                         max_segment_rms: None,
                         error: None,
                     });
                 }
-                if buffer.len() >= max_samples && buffer.len() >= min_samples {
-                    // Reuse frame_rms for silence gate instead of recomputing.
-                    if frame_rms < SILENCE_RMS_THRESHOLD {
-                        buffer.clear();
-                        segment_start = stream_time;
-                        low_energy_drops += 1;
-                        continue;
+
+                // --- Segment emission logic ---
+                let should_cut = if config.vad_enabled {
+                    // VAD mode: cut when silence detected and min duration met.
+                    consecutive_silence >= silence_frames_threshold
+                        && buffer.len() >= min_samples
+                } else {
+                    // Legacy mode: cut when buffer is full.
+                    buffer.len() >= max_samples && buffer.len() >= min_samples
+                };
+
+                if should_cut {
+                    // In legacy mode, apply RMS silence gate to discard noise-only buffers.
+                    if let Some(rms_val) = frame_rms {
+                        if rms_val < SILENCE_RMS_THRESHOLD {
+                            buffer.clear();
+                            segment_start = stream_time;
+                            low_energy_drops += 1;
+                            consecutive_silence = 0;
+                            continue;
+                        }
                     }
-                    index += 1;
-                    let segment = AudioSegment {
-                        id: format!("seg_{index:06}"),
-                        samples: std::mem::take(&mut buffer),
+                    let samples = std::mem::take(&mut buffer);
+                    if !emit_audio_segment(
+                        &tx,
+                        &mut index,
+                        &mut segment_start,
+                        stream_time,
                         sample_rate,
                         channels,
-                        start_time: segment_start,
-                        end_time: stream_time,
-                        created_at: Instant::now(),
-                    };
-                    segment_start = stream_time;
-                    segment_counter.fetch_add(1, Ordering::Relaxed);
-                    segment_queue_depth.fetch_add(1, Ordering::Relaxed);
-                    if tx.send(segment).await.is_err() {
+                        samples,
+                        &segment_counter,
+                        &segment_queue_depth,
+                        &mut consecutive_silence,
+                        &mut vad,
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+
+                // Fallback: force-cut if buffer exceeds max duration regardless of VAD.
+                if buffer.len() >= max_samples {
+                    if let Some(rms_val) = frame_rms {
+                        if rms_val < SILENCE_RMS_THRESHOLD {
+                            buffer.clear();
+                            segment_start = stream_time;
+                            low_energy_drops += 1;
+                            consecutive_silence = 0;
+                            continue;
+                        }
+                    }
+                    let samples = std::mem::take(&mut buffer);
+                    if !emit_audio_segment(
+                        &tx,
+                        &mut index,
+                        &mut segment_start,
+                        stream_time,
+                        sample_rate,
+                        channels,
+                        samples,
+                        &segment_counter,
+                        &segment_queue_depth,
+                        &mut consecutive_silence,
+                        &mut vad,
+                    )
+                    .await
+                    {
                         break;
                     }
                 }
@@ -476,19 +632,21 @@ async fn segmenter_task(
 
     // Flush remaining buffer as a final segment on pipeline end.
     if !buffer.is_empty() {
-        index += 1;
-        segment_queue_depth.fetch_add(1, Ordering::Relaxed);
-        let _ = tx
-            .send(AudioSegment {
-                id: format!("seg_{index:06}"),
-                samples: buffer,
-                sample_rate,
-                channels,
-                start_time: segment_start,
-                end_time: stream_time,
-                created_at: Instant::now(),
-            })
-            .await;
+        let samples = std::mem::take(&mut buffer);
+        let _ = emit_audio_segment(
+            &tx,
+            &mut index,
+            &mut segment_start,
+            stream_time,
+            sample_rate,
+            channels,
+            samples,
+            &segment_counter,
+            &segment_queue_depth,
+            &mut consecutive_silence,
+            &mut vad,
+        )
+        .await;
     }
 }
 
@@ -642,6 +800,17 @@ struct OpenTail {
     segment: RecognizedSegment,
     source_text: String,
     version: u32,
+}
+
+fn make_open_tail(segment: RecognizedSegment, source_text: String, version: u32) -> OpenTail {
+    OpenTail {
+        segment: RecognizedSegment {
+            source_text: source_text.clone(),
+            ..segment
+        },
+        source_text,
+        version,
+    }
 }
 
 /// Result of a concurrent translation, to be reordered.
@@ -973,27 +1142,23 @@ async fn emit_translated_segment(
                 trim_context(context);
 
                 if !remainder.is_empty() {
-                    *open_tail = Some(OpenTail {
-                        segment: RecognizedSegment {
+                    *open_tail = Some(make_open_tail(
+                        RecognizedSegment {
                             id: segment.id.clone(),
-                            source_text: remainder,
+                            source_text: remainder.clone(),
                             start_time: segment.start_time,
                             end_time: segment.end_time,
                             asr_ms: segment.asr_ms,
                             created_at: segment.created_at,
                         },
-                        source_text: segment.source_text.clone(),
-                        version: 1,
-                    });
+                        remainder,
+                        1,
+                    ));
                 }
             }
             Err(error) => {
                 emit_error(app, "TRANSLATION_FAILED", &error.to_string(), true);
-                *open_tail = Some(OpenTail {
-                    segment,
-                    source_text: tail.source_text,
-                    version: tail.version,
-                });
+                *open_tail = Some(make_open_tail(segment, tail.source_text, tail.version));
             }
         }
     } else {
@@ -1017,11 +1182,7 @@ async fn emit_translated_segment(
         trim_context(context);
 
         if !is_sentence_complete(&segment.source_text) {
-            *open_tail = Some(OpenTail {
-                segment,
-                source_text: subtitle.source_text.clone(),
-                version: 2,
-            });
+            *open_tail = Some(make_open_tail(segment, subtitle.source_text.clone(), 2));
         }
     }
 }
@@ -1164,6 +1325,36 @@ fn rms(samples: &[i16]) -> f32 {
     (sum / samples.len() as f64).sqrt() as f32
 }
 
+/// Downsamples mono i16 audio from `src_rate` to 16 KHz by nearest-neighbor
+/// sampling. For 48 KHz → 16 KHz this picks every 3rd sample; for 44.1 KHz it
+/// uses linear interpolation. Returns an empty slice if `src_rate` is 0 or
+/// `samples` is empty. The 16 KHz fast path returns a borrow of the input to
+/// avoid an unnecessary copy on the common case.
+fn resample_to_16k(samples: &[i16], src_rate: u32) -> std::borrow::Cow<'_, [i16]> {
+    if src_rate == 0 || samples.is_empty() {
+        return std::borrow::Cow::Borrowed(&[]);
+    }
+    if src_rate == 16_000 {
+        return std::borrow::Cow::Borrowed(samples);
+    }
+    let ratio = src_rate as f64 / 16_000.0;
+    let out_len = (samples.len() as f64 / ratio).ceil() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let pos = i as f64 * ratio;
+        let idx = pos as usize;
+        let frac = pos - idx as f64;
+        if idx + 1 < samples.len() && frac > 0.01 {
+            // Linear interpolation between adjacent samples.
+            let val = samples[idx] as f64 * (1.0 - frac) + samples[idx + 1] as f64 * frac;
+            out.push(val.round() as i16);
+        } else if idx < samples.len() {
+            out.push(samples[idx]);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 fn emit_status(app: &AppHandle, session_id: Option<String>, status: &str) {
     let _ = app.emit(
         "session:status",
@@ -1304,6 +1495,11 @@ mod tests {
     }
 
     #[test]
+    fn sentence_complete_rejects_numbered_prefix_fragment() {
+        assert!(!is_sentence_complete("10."));
+    }
+
+    #[test]
     fn split_first_sentence_basic() {
         let (first, rest) = split_first_sentence("Hello world. Next sentence.");
         assert_eq!(first.as_deref(), Some("Hello world."));
@@ -1318,10 +1514,131 @@ mod tests {
     }
 
     #[test]
+    fn split_first_sentence_skips_numbered_prefix_fragment() {
+        let input = "10. I think we should focus more on sustainability.";
+        let (first, rest) = split_first_sentence(input);
+        assert_eq!(first.as_deref(), Some(input));
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn split_first_sentence_keeps_real_numeric_sentences() {
+        let (first, rest) = split_first_sentence("2024. Next topic.");
+        assert_eq!(first.as_deref(), Some("2024."));
+        assert_eq!(rest, "Next topic.");
+    }
+
+    #[test]
     fn join_source_text_cleans_whitespace() {
         assert_eq!(join_source_text(&["Hello", "world."]), "Hello world.");
         assert_eq!(join_source_text(&["Hello ", " world"]), "Hello world");
         assert_eq!(join_source_text(&["word ."]), "word.");
         assert_eq!(join_source_text(&["", "  ", "text"]), "text");
+    }
+
+    #[test]
+    fn make_open_tail_uses_remainder_in_both_fields() {
+        let tail = make_open_tail(
+            RecognizedSegment {
+                id: "seg_000021".into(),
+                source_text: "full segment text".into(),
+                start_time: 1.0,
+                end_time: 2.0,
+                asr_ms: 123.0,
+                created_at: Instant::now(),
+            },
+            "tail remainder".into(),
+            1,
+        );
+
+        assert_eq!(tail.source_text, "tail remainder");
+        assert_eq!(tail.segment.source_text, "tail remainder");
+        assert_eq!(
+            join_source_text(&[&tail.source_text, "today."]),
+            "tail remainder today."
+        );
+    }
+
+    // --- VAD / resample tests ---
+
+    #[test]
+    fn resample_identity_at_16k() {
+        let samples: Vec<i16> = (0..512).map(|i| i as i16).collect();
+        let out = resample_to_16k(&samples, 16_000);
+        // 16 KHz fast path must be a borrow, not a copy.
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(out.as_ref(), samples.as_slice());
+    }
+
+    #[test]
+    fn resample_48k_to_16k_length() {
+        // 48 KHz → 16 KHz: ratio 3, so output length = input / 3.
+        let samples: Vec<i16> = (0..480).map(|i| i as i16).collect();
+        let out = resample_to_16k(&samples, 48_000);
+        assert_eq!(out.len(), 160);
+        // Every 3rd sample should match (nearest-neighbor).
+        assert_eq!(out[0], samples[0]);
+        assert_eq!(out[1], samples[3]);
+        assert_eq!(out[2], samples[6]);
+    }
+
+    #[test]
+    fn resample_44100_to_16k_interpolates() {
+        let samples: Vec<i16> = (0..441).map(|i| i as i16).collect();
+        let out = resample_to_16k(&samples, 44_100);
+        // 441 / (44100/16000) ≈ 160
+        assert!((159..=161).contains(&out.len()));
+    }
+
+    #[test]
+    fn resample_empty_or_zero_rate() {
+        assert!(resample_to_16k(&[], 48_000).is_empty());
+        assert!(resample_to_16k(&[1, 2, 3], 0).is_empty());
+    }
+
+    #[test]
+    fn vad_silence_frames_threshold_calculation() {
+        // 0.4s / 0.016s per frame = 25 frames
+        let threshold = (0.4f32 / 0.016).ceil() as u32;
+        assert_eq!(threshold, 25);
+
+        let threshold2 = (0.6f32 / 0.016).ceil() as u32;
+        assert_eq!(threshold2, 38);
+    }
+
+    #[test]
+    fn vad_detector_silence_scores_low() {
+        let mut det = Detector::default_boxed();
+        // Feed 256 zero samples (silence) — score should be low.
+        let silence = vec![0i16; VAD_FRAME_SIZE];
+        let score = det.predict_i16(&silence);
+        assert!(score < 0.5, "Expected silence score < 0.5, got {score}");
+    }
+
+    #[test]
+    fn vad_detector_scores_signal_higher_than_silence() {
+        // The VAD must respond to non-silent audio with a higher score than
+        // silence, on a fresh detector. Use a 440 Hz tone with a bias
+        // (a single-tone VAD input is a weak signal, so adding a DC offset
+        // plus amplitude makes the energy features clearly non-silent).
+        let sine: Vec<i16> = (0..VAD_FRAME_SIZE)
+            .map(|i| {
+                let t = i as f64 / 16_000.0;
+                let v = 8000.0 * (2.0 * std::f64::consts::PI * 440.0 * t).sin()
+                    + 2000.0 * (2.0 * std::f64::consts::PI * 880.0 * t).sin();
+                v as i16
+            })
+            .collect();
+        let silence = vec![0i16; VAD_FRAME_SIZE];
+
+        let mut det = Detector::default_boxed();
+        let signal_score = det.predict_i16(&sine);
+        det.reset();
+        let silence_score = det.predict_i16(&silence);
+
+        assert!(
+            signal_score > silence_score,
+            "Expected signal score ({signal_score}) > silence score ({silence_score})"
+        );
     }
 }
