@@ -92,7 +92,10 @@ impl fmt::Debug for RuntimeConfig {
             .field("vad_enabled", &self.vad_enabled)
             .field("diagnostics_enabled", &self.diagnostics_enabled)
             .field("audio_denoise_enabled", &self.audio_denoise_enabled)
-            .field("audio_peak_normalize_enabled", &self.audio_peak_normalize_enabled)
+            .field(
+                "audio_peak_normalize_enabled",
+                &self.audio_peak_normalize_enabled,
+            )
             .field("audio_resample_quality", &self.audio_resample_quality)
             .finish()
     }

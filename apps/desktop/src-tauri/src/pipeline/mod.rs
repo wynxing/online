@@ -1637,17 +1637,26 @@ mod tests {
 
     #[test]
     fn hallucination_exact_match() {
-        assert!(is_likely_hallucination("Hello world", &Some("Hello world".into())));
+        assert!(is_likely_hallucination(
+            "Hello world",
+            &Some("Hello world".into())
+        ));
     }
 
     #[test]
     fn hallucination_case_insensitive_match() {
-        assert!(is_likely_hallucination("hello world", &Some("Hello World".into())));
+        assert!(is_likely_hallucination(
+            "hello world",
+            &Some("Hello World".into())
+        ));
     }
 
     #[test]
     fn hallucination_whitespace_normalization() {
-        assert!(is_likely_hallucination("Hello  world", &Some("Hello world".into())));
+        assert!(is_likely_hallucination(
+            "Hello  world",
+            &Some("Hello world".into())
+        ));
     }
 
     #[test]
@@ -1663,13 +1672,19 @@ mod tests {
 
     #[test]
     fn hallucination_different_text_not_flagged() {
-        assert!(!is_likely_hallucination("Completely different content", &Some("Hello world".into())));
+        assert!(!is_likely_hallucination(
+            "Completely different content",
+            &Some("Hello world".into())
+        ));
     }
 
     #[test]
     fn hallucination_short_overlap_not_flagged() {
         // Small common substring should not trigger.
-        assert!(!is_likely_hallucination("The meeting", &Some("The quick brown fox jumps".into())));
+        assert!(!is_likely_hallucination(
+            "The meeting",
+            &Some("The quick brown fox jumps".into())
+        ));
     }
 
     #[test]
@@ -1679,12 +1694,18 @@ mod tests {
 
     #[test]
     fn hallucination_cjk_exact_match() {
-        assert!(is_likely_hallucination("你好世界", &Some("你好世界".into())));
+        assert!(is_likely_hallucination(
+            "你好世界",
+            &Some("你好世界".into())
+        ));
     }
 
     #[test]
     fn hallucination_cjk_different_not_flagged() {
-        assert!(!is_likely_hallucination("今天天气很好", &Some("你好世界".into())));
+        assert!(!is_likely_hallucination(
+            "今天天气很好",
+            &Some("你好世界".into())
+        ));
     }
 
     #[test]

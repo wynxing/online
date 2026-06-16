@@ -1,4 +1,6 @@
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 
 use crate::models::RuntimeConfig;
 
@@ -182,7 +184,7 @@ fn try_resample_rubato(samples: &[i16], src_rate: u32, quality: &str) -> Option<
 
     let mut resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, chunk_size, 1).ok()?;
     let out = resampler.process(&[input_f32], None).ok()?;
-    let resampled_f32: Vec<f32> = out.into_iter().flat_map(|ch| ch).collect();
+    let resampled_f32: Vec<f32> = out.into_iter().flatten().collect();
 
     Some(
         resampled_f32
@@ -291,7 +293,9 @@ mod tests {
     fn preprocessor_mono_downmix() {
         let mut pp = AudioPreprocessor::new();
         // Stereo input: alternating L/R.
-        let stereo: Vec<i16> = (0..200).map(|i| if i % 2 == 0 { 4000 } else { 2000 }).collect();
+        let stereo: Vec<i16> = (0..200)
+            .map(|i| if i % 2 == 0 { 4000 } else { 2000 })
+            .collect();
         let config = test_config();
         let result = pp.process(&stereo, 48_000, 2, &config);
         // Output should be mono + resampled.
