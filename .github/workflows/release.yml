@@ -138,6 +138,28 @@ jobs:
         with:
           path: release-artifacts
 
+      - name: Normalize macOS updater artifact names
+        shell: bash
+        run: |
+          shopt -s nullglob
+          version="${{ steps.version.outputs.version }}"
+          asset_version="${version#v}"
+          for archive in release-artifacts/bundle-macos-*/macos/*.app.tar.gz; do
+            case "$archive" in
+              *bundle-macos-arm64*) arch="aarch64" ;;
+              *bundle-macos-x64*) arch="x64" ;;
+              *)
+                echo "Unknown macOS artifact path: $archive" >&2
+                exit 1
+                ;;
+            esac
+
+            target="$(dirname "$archive")/AI Interpretation Assistant_${asset_version}_${arch}.app.tar.gz"
+            mv "$archive" "$target"
+            mv "$archive.sig" "$target.sig"
+            echo "Renamed $archive to $target"
+          done
+
       - name: Generate update manifest
         env:
           GITHUB_REPO: ${{ github.repository }}
@@ -161,7 +183,8 @@ jobs:
             release-artifacts/**/*.msi
             release-artifacts/**/*.msi.sig
             release-artifacts/**/*.dmg
-            release-artifacts/**/*.dmg.sig
+            release-artifacts/**/*.app.tar.gz
+            release-artifacts/**/*.app.tar.gz.sig
             release-artifacts/**/*.AppImage
             release-artifacts/**/*.AppImage.sig
             release-artifacts/**/*.deb

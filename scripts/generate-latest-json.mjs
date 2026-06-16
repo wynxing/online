@@ -48,7 +48,7 @@ function platformKey(filePath) {
 
   if (lower.includes("/nsis/") && extension === ".exe") return "windows-x86_64";
   if (lower.includes("/msi/") && extension === ".msi") return "windows-x86_64-msi";
-  if (extension === ".dmg") {
+  if (lower.endsWith(".app.tar.gz")) {
     if (lower.includes("aarch64") || lower.includes("arm64") || lower.includes("apple-silicon")) return "darwin-aarch64";
     if (lower.includes("x64") || lower.includes("x86_64") || lower.includes("intel")) return "darwin-x86_64";
     return process.env.TAURI_TARGET_PLATFORM || "darwin-aarch64";
@@ -62,7 +62,7 @@ function platformKey(filePath) {
 
 const artifacts = walk(resolve(bundleDir)).filter((file) => {
   const extension = extname(file).toLowerCase();
-  return [".exe", ".msi", ".dmg", ".appimage", ".deb"].includes(extension);
+  return [".exe", ".msi", ".appimage", ".deb"].includes(extension) || file.toLowerCase().endsWith(".app.tar.gz");
 });
 
 for (const artifact of artifacts) {
