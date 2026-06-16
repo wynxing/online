@@ -1,6 +1,6 @@
 [package]
 name = "ai-interpretation-desktop"
-version = "0.5.0"
+version = "0.6.0"
 description = "AI simultaneous interpretation assistant"
 authors = ["AI Interpretation Team"]
 edition = "2021"
