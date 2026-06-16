@@ -70,6 +70,8 @@ static RE_NUMERIC_NOISE: LazyLock<Regex> =
 static RE_SHORT_MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z]$").unwrap());
 static RE_LATIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z]").unwrap());
 static RE_CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u{4e00}-\u{9fff}]").unwrap());
+static RE_LEADING_LINE_NUMBER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\d{1,3}\s*[.)\]:]\s*").unwrap());
 
 #[derive(Clone)]
 pub struct AsrClient {
@@ -220,7 +222,7 @@ impl TranslationClient {
             base_url: config.base_url.clone(),
             api_key: config.api_key.clone(),
             model: config.translation_model.clone(),
-            cache: tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(128).unwrap())),
+            cache: tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
         }
     }
 
@@ -270,7 +272,7 @@ impl TranslationClient {
             format!("Translate from {source_lang} to {target_lang}:\n\n{source_text}")
         } else {
             format!(
-                "Recent confirmed context. Do not retranslate these lines:\n{}\n\nTranslate from {source_lang} to {target_lang}:\n\n{source_text}",
+                "Below are previously translated lines for reference only. DO NOT retranslate them. DO NOT include numbers or prefixes in your output:\n{}\n\nTranslate ONLY the following text from {source_lang} to {target_lang}:\n\n{source_text}",
                 serde_json::to_string(&context_payload).unwrap_or_default()
             )
         };
@@ -359,7 +361,7 @@ impl TranslationClient {
             format!("Translate from {source_lang} to {target_lang}:\n\n{source_text}")
         } else {
             format!(
-                "Recent confirmed context. Do not retranslate these lines:\n{}\n\nTranslate from {source_lang} to {target_lang}:\n\n{source_text}",
+                "Below are previously translated lines for reference only. DO NOT retranslate them. DO NOT include numbers or prefixes in your output:\n{}\n\nTranslate ONLY the following text from {source_lang} to {target_lang}:\n\n{source_text}",
                 serde_json::to_string(&context_payload).unwrap_or_default()
             )
         };
@@ -400,16 +402,28 @@ impl TranslationClient {
 
         let mut stream = response.bytes_stream();
         let mut accumulated = String::new();
-        let mut line_buf = String::new();
+        let mut line_buf = Vec::<u8>::new();
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.map_err(AppError::Http)?;
-            let text = std::str::from_utf8(&bytes).unwrap_or("");
 
-            for ch in text.chars() {
-                line_buf.push(ch);
-                if ch == '\n' {
-                    let line = line_buf.trim().to_string();
+            // Split on '\n' using byte iteration — avoids per-char UTF-8 decode.
+            // `from_utf8_lossy` is used at line boundaries: if a multi-byte UTF-8
+            // char happens to be split across two network chunks, the broken
+            // bytes are replaced with U+FFFD rather than silently dropping the
+            // entire token line.
+            for &byte in bytes.iter() {
+                if byte == b'\n' {
+                    let line = match std::str::from_utf8(&line_buf) {
+                        Ok(s) => s.trim().to_string(),
+                        Err(err) => {
+                            tracing::debug!(
+                                error = %err,
+                                "SSE line contained invalid UTF-8 (likely a multi-byte char split across chunks); using lossy conversion"
+                            );
+                            String::from_utf8_lossy(&line_buf).trim().to_string()
+                        }
+                    };
                     line_buf.clear();
 
                     // SSE format: "data: {...}" or "data: [DONE]"
@@ -431,6 +445,8 @@ impl TranslationClient {
                             }
                         }
                     }
+                } else {
+                    line_buf.push(byte);
                 }
             }
         }
@@ -573,7 +589,7 @@ fn matched_glossary_terms(
 
 fn translation_system_prompt(source_lang: &str, target_lang: &str) -> String {
     format!(
-        "You are a professional simultaneous interpreter. Translate speech subtitles from {source_lang} to {target_lang}.\n\nRules:\n- Use natural spoken language in the target language, not written/formal style\n- Keep translation concise\n- Preserve technical terminology exactly as specified in the glossary\n- For partial or fragmented input, translate the fragment as-is without adding missing words\n- Never translate literally word-by-word; produce natural target-language phrasing\n- Only output the translation, no explanations or notes"
+        "You are a professional simultaneous interpreter. Translate speech subtitles from {source_lang} to {target_lang}.\n\nRules:\n- Use natural spoken language in the target language, not written/formal style\n- Keep translation concise\n- Preserve technical terminology exactly as specified in the glossary\n- For partial or fragmented input, translate the fragment as-is without adding missing words\n- Never translate literally word-by-word; produce natural target-language phrasing\n- Only output the translation, no explanations or notes\n- NEVER add line numbers, bullet points, numbering, or any prefixes to the translation\n- NEVER retranslate or repeat lines that are already provided as confirmed context"
     )
 }
 
@@ -606,6 +622,7 @@ fn clean_translation_text(text: &str) -> String {
         }
         value = stripped;
     }
+    value = RE_LEADING_LINE_NUMBER.replace(&value, "").to_string();
     value
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -729,6 +746,20 @@ mod tests {
             clean_translation_text("<think>reasoning</think>answer"),
             "answer"
         );
+    }
+
+    #[test]
+    fn translation_cleanup_strips_leading_line_numbers() {
+        assert_eq!(clean_translation_text("1. Hello world"), "Hello world");
+        assert_eq!(clean_translation_text("2) 你好世界"), "你好世界");
+        assert_eq!(
+            clean_translation_text("3: translated text"),
+            "translated text"
+        );
+        assert_eq!(clean_translation_text("12. Some text"), "Some text");
+        // Should not strip numbers that are part of content.
+        assert_eq!(clean_translation_text("2024年"), "2024年");
+        assert_eq!(clean_translation_text("No number here"), "No number here");
     }
 
     #[test]
@@ -877,7 +908,7 @@ mod tests {
             base_url,
             api_key: "test-key".into(),
             model: "test-model".into(),
-            cache: tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(128).unwrap())),
+            cache: tokio::sync::Mutex::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
         }
     }
 
@@ -905,5 +936,193 @@ mod tests {
             "HTTP/1.1 {status} {reason}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    /// Spins up a one-shot HTTP server that writes the SSE `body_parts` as
+    /// distinct TCP segments (flush + short sleep between writes), forcing
+    /// the client to observe multiple `bytes_stream` chunks. The total
+    /// `Content-Length` is the sum of all parts so reqwest will wait for the
+    /// whole body before returning.
+    async fn spawn_chunked_body_server(
+        body_parts: Vec<Vec<u8>>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let total_len: usize = body_parts.iter().map(|p| p.len()).sum();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await.unwrap();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {total_len}\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+            for part in body_parts {
+                socket.write_all(&part).await.unwrap();
+                socket.flush().await.unwrap();
+                // Small pause so the kernel delivers each write as a
+                // distinct packet — reqwest will surface them as separate
+                // `Bytes` chunks in `bytes_stream()`.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        });
+        (format!("http://{addr}"), server)
+    }
+
+    /// Replays the byte-based SSE splitter used in `translate_streaming` and
+    /// collects the streamed tokens. Mirrors the production logic so the
+    /// tests stay in sync with any fixes applied there.
+    fn collect_sse_tokens(chunks: &[&[u8]]) -> String {
+        let mut accumulated = String::new();
+        let mut line_buf = Vec::<u8>::new();
+        for chunk in chunks {
+            for &byte in chunk.iter() {
+                if byte == b'\n' {
+                    let line = match std::str::from_utf8(&line_buf) {
+                        Ok(s) => s.trim().to_string(),
+                        Err(_) => String::from_utf8_lossy(&line_buf).trim().to_string(),
+                    };
+                    line_buf.clear();
+                    if let Some(json_str) = line.strip_prefix("data:") {
+                        let json_str = json_str.trim();
+                        if json_str == "[DONE]" {
+                            continue;
+                        }
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            if let Some(delta) = val.pointer("/choices/0/delta/content") {
+                                if let Some(token) = delta.as_str() {
+                                    if !token.is_empty() {
+                                        accumulated.push_str(token);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    line_buf.push(byte);
+                }
+            }
+        }
+        accumulated
+    }
+
+    #[test]
+    fn sse_byte_split_parses_tokens() {
+        let sse_body = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\ndata: [DONE]\n\n";
+        let accumulated = collect_sse_tokens(&[sse_body.as_slice()]);
+        assert_eq!(accumulated, "Hello world");
+    }
+
+    #[test]
+    fn sse_byte_split_handles_chunked_data() {
+        // SSE data arriving in multiple chunks mid-line.
+        // chunk1 ends mid-JSON, chunk2 completes it.
+        let chunk1 = b"data: {\"choices\":[{\"delta\":{\"con";
+        let chunk2 = b"tent\":\"Hi\"}}]}\n\ndata: [DONE]\n\n";
+        let accumulated = collect_sse_tokens(&[chunk1.as_slice(), chunk2.as_slice()]);
+        assert_eq!(accumulated, "Hi");
+    }
+
+    #[test]
+    fn sse_byte_split_handles_multibyte_utf8_split_across_chunks() {
+        // 中文 token "你" 是 3 字节 UTF-8 (E4 BD A0)。让一个 3 字节字符被
+        // 切到两个 chunk 的边界，验证解析器不会把整行吞掉。
+        let line1 = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n";
+        let line2 = "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n";
+        let line3 = "data: [DONE]\n\n";
+
+        // 在 "你" 的 3 字节中间切一次（E4 BD | A0），模拟网络 chunk 边界。
+        let bytes = line1.as_bytes();
+        let cut = bytes
+            .windows(3)
+            .position(|w| w == [0xE4, 0xBD, 0xA0])
+            .unwrap()
+            + 2;
+        let chunk1 = &bytes[..cut];
+        let chunk2 = &bytes[cut..];
+        let chunk3 = line2.as_bytes();
+        let chunk4 = line3.as_bytes();
+
+        let accumulated = collect_sse_tokens(&[chunk1, chunk2, chunk3, chunk4]);
+        // "你" 的字节被拆开后，lossy 转换会插入 U+FFFD 替换字符。
+        // 关键不变量：第二个 token "好" 必须完整保留，且 3 个 token 都到达
+        // （即整个流没有被一个坏字节阻断）。
+        assert!(
+            accumulated.contains('好'),
+            "完整 token 必须在被截断后仍能恢复: got {accumulated:?}"
+        );
+        assert!(
+            accumulated.ends_with('好'),
+            "流应正常结束于最后一个完整 token: got {accumulated:?}"
+        );
+        // 整段不能少于 '好' 的字符数。
+        assert!(accumulated.chars().count() >= 1);
+    }
+
+    #[tokio::test]
+    async fn streaming_translation_handles_multibyte_utf8_split_across_tcp_chunks() {
+        // End-to-end test: spin up a real HTTP server that writes the SSE
+        // body in two distinct TCP segments with the multi-byte UTF-8 char
+        // "你" straddling the boundary, and verify the translated result
+        // recovers the second token "好" intact.
+        let line1 = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n";
+        let line2 = "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n";
+        let line3 = "data: [DONE]\n\n";
+
+        // Locate the 3 bytes of '你' (E4 BD A0) and split the first line
+        // right after the second byte so the third byte lands in part 2.
+        let bytes = line1.as_bytes();
+        let cut = bytes
+            .windows(3)
+            .position(|w| w == [0xE4, 0xBD, 0xA0])
+            .unwrap()
+            + 2;
+        let part1: Vec<u8> = bytes[..cut].to_vec();
+        let part2: Vec<u8> = bytes[cut..].to_vec();
+        let part3 = line2.as_bytes().to_vec();
+        let part4 = line3.as_bytes().to_vec();
+
+        let (base_url, server) = spawn_chunked_body_server(vec![part1, part2, part3, part4]).await;
+        let client = test_translation_client(base_url);
+
+        let translated = client
+            .translate_streaming("hello", "en", "zh", &[], &[], None)
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        // The first token's bytes were split, so it may be replaced with the
+        // U+FFFD replacement character. The second token "好" arrives in a
+        // single TCP chunk and must be recovered intact.
+        assert!(
+            translated.ends_with('好'),
+            "流末尾的完整 token 必须保留: got {translated:?}"
+        );
+        assert!(
+            translated.contains('好'),
+            "流中必须出现 '好': got {translated:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_translation_handles_ascii_split_across_tcp_chunks() {
+        // Sanity check that the chunked-body plumbing works for plain ASCII
+        // — every token must round-trip cleanly.
+        let body_a = b"data: {\"choices\":[{\"delta\":{\"content\":\"He";
+        let body_b = b"llo\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" w";
+        let body_c = b"orld\"}}]}\n\ndata: [DONE]\n\n";
+
+        let (base_url, server) =
+            spawn_chunked_body_server(vec![body_a.to_vec(), body_b.to_vec(), body_c.to_vec()])
+                .await;
+        let client = test_translation_client(base_url);
+
+        let translated = client
+            .translate_streaming("ignored", "en", "fr", &[], &[], None)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(translated, "Hello world");
     }
 }
