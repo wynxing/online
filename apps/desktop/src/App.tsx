@@ -71,6 +71,7 @@ const defaultConfig: RuntimeConfig = {
   segmentMinDuration: 1.2,
   segmentMaxDuration: 3.0,
   segmentSilenceDuration: 0.35,
+  vadEnabled: true,
   diagnosticsEnabled: true,
 };
 

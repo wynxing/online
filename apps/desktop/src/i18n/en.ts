@@ -69,6 +69,7 @@ const en: Record<string, string> = {
   "settings.minSegmentSeconds": "Min segment seconds",
   "settings.maxSegmentSeconds": "Max segment seconds",
   "settings.silenceSplitSeconds": "Silence split seconds",
+  "settings.vadEnabled": "Enable VAD voice endpoint detection",
   "settings.asrConcurrency": "ASR concurrency",
   "settings.translationConcurrency": "Translation concurrency",
   "settings.displaySection": "Display",

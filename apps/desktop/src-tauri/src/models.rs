@@ -35,6 +35,7 @@ pub struct Device {
 /// Runtime config with redacted secrets in Debug output.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct RuntimeConfig {
     pub base_url: String,
     pub api_key: String,
@@ -57,6 +58,7 @@ pub struct RuntimeConfig {
     pub segment_min_duration: f32,
     pub segment_max_duration: f32,
     pub segment_silence_duration: f32,
+    pub vad_enabled: bool,
     pub diagnostics_enabled: bool,
 }
 
@@ -84,6 +86,7 @@ impl fmt::Debug for RuntimeConfig {
             .field("segment_min_duration", &self.segment_min_duration)
             .field("segment_max_duration", &self.segment_max_duration)
             .field("segment_silence_duration", &self.segment_silence_duration)
+            .field("vad_enabled", &self.vad_enabled)
             .field("diagnostics_enabled", &self.diagnostics_enabled)
             .finish()
     }
@@ -110,9 +113,10 @@ impl Default for RuntimeConfig {
             asr_format: "whisper".into(),
             asr_concurrency: 2,
             translation_concurrency: 3,
-            segment_min_duration: 1.2,
+            segment_min_duration: 0.6,
             segment_max_duration: 3.0,
-            segment_silence_duration: 0.35,
+            segment_silence_duration: 0.4,
+            vad_enabled: true,
             diagnostics_enabled: true,
         }
     }
@@ -138,9 +142,12 @@ impl RuntimeConfig {
         self.font_size = self.font_size.clamp(14, 56);
         self.asr_concurrency = self.asr_concurrency.clamp(1, 8);
         self.translation_concurrency = self.translation_concurrency.clamp(1, 8);
-        self.segment_min_duration = self.segment_min_duration.clamp(0.4, 10.0);
+        self.segment_min_duration = self.segment_min_duration.clamp(0.3, 10.0);
         self.segment_max_duration = self.segment_max_duration.clamp(0.8, 20.0);
-        self.segment_silence_duration = self.segment_silence_duration.clamp(0.1, 3.0);
+        self.segment_silence_duration = self.segment_silence_duration.clamp(0.15, 3.0);
+        if self.segment_min_duration >= self.segment_max_duration {
+            self.segment_min_duration = self.segment_max_duration * 0.5;
+        }
         self
     }
 

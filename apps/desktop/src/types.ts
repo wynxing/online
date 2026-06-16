@@ -35,6 +35,7 @@ export interface RuntimeConfig {
   segmentMinDuration: number;
   segmentMaxDuration: number;
   segmentSilenceDuration: number;
+  vadEnabled: boolean;
   diagnosticsEnabled: boolean;
 }
 

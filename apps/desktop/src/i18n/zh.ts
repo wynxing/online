@@ -68,6 +68,7 @@ const zh: Record<string, string> = {
   "settings.minSegmentSeconds": "最小分段秒数",
   "settings.maxSegmentSeconds": "最大分段秒数",
   "settings.silenceSplitSeconds": "静音分割秒数",
+  "settings.vadEnabled": "启用 VAD 语音端点检测",
   "settings.asrConcurrency": "ASR 并发数",
   "settings.translationConcurrency": "翻译并发数",
   "settings.displaySection": "显示",

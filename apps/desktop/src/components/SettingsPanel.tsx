@@ -167,7 +167,7 @@ export function SettingsPanel({
             <span>{t("settings.minSegmentSeconds", lang)}</span>
             <input
               type="number"
-              min="0.4"
+              min="0.3"
               max="10"
               step="0.1"
               value={config.segmentMinDuration}
@@ -189,12 +189,20 @@ export function SettingsPanel({
             <span>{t("settings.silenceSplitSeconds", lang)}</span>
             <input
               type="number"
-              min="0.1"
+              min="0.15"
               max="3"
               step="0.05"
               value={config.segmentSilenceDuration}
               onChange={(event) => updateConfigNumber("segmentSilenceDuration", event.target.value)}
             />
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={config.vadEnabled}
+              onChange={(event) => setConfig({ ...config, vadEnabled: event.target.checked })}
+            />
+            <span>{t("settings.vadEnabled", lang)}</span>
           </label>
         </div>
         <div className="settings-columns">
