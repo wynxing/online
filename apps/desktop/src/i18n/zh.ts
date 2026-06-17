@@ -1,8 +1,10 @@
 const zh: Record<string, string> = {
   // Brand
   "brand.title": "AI 同传助手",
-  "brand.subtitle": "实时双语字幕",
-  "brand.sourceToTarget": "EN → ZH-CN",
+  "brand.subtitle": "实时多语言字幕",
+  "settings.customLanguage": "自定义...",
+  "settings.asrAutoDetect": "自动检测 (auto)",
+  "settings.asrLanguageHint": '从源语言自动派生。填 "auto" 可启用 Whisper 自动检测。',
 
   // Nav
   "nav.console": "控制台",

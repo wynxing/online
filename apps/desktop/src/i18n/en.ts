@@ -1,8 +1,11 @@
 const en: Record<string, string> = {
   // Brand
   "brand.title": "AI Interpretation",
-  "brand.subtitle": "Real-time Bilingual Subtitles",
-  "brand.sourceToTarget": "EN → ZH-CN",
+  "brand.subtitle": "Real-time Multilingual Subtitles",
+  "settings.customLanguage": "Custom...",
+  "settings.asrAutoDetect": "Auto-detect (auto)",
+  "settings.asrLanguageHint":
+    'Auto-derived from source language. Use "auto" for Whisper auto-detect.',
 
   // Nav
   "nav.console": "Console",
