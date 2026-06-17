@@ -57,17 +57,88 @@ const SIGNAL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// If no audio frames arrive within this window, emit a no-signal warning.
 const NO_SIGNAL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10);
 
+// ── Sentence boundary detection (multi-script) ────────────────────────────
+//
+// Sentence boundary detection relies on script-specific terminal punctuation.
+// SENTENCE_TERMINALS_AMBIGUOUS / SENTENCE_TERMINALS_FIRM / SENTENCE_CLOSERS
+// below are the inside of regex char classes (`[...]`) shared by
+// RE_SENTENCE_BOUNDARY and RE_SENTENCE_END so the two stay in sync.
+//
+// Languages without sentence-terminal punctuation in running text (e.g. Thai,
+// Lao, classical CJK without 。) fall back to the long-segment heuristic and
+// may exhibit higher latency before `open_tail` flushes. This is a known
+// limitation; no per-language sentencizer is bundled.
+
+/// Sentence-terminal punctuation that REQUIRES a following whitespace or
+/// end-of-string to count as a boundary. ASCII `.` is ambiguous (decimal,
+/// abbreviation, ellipsis) so it needs the whitespace guard.
+const SENTENCE_TERMINALS_AMBIGUOUS: &str = ".!?…";
+
+/// Sentence-terminal punctuation that is self-delimiting — these characters
+/// only appear at sentence boundaries in their respective scripts, so we
+/// don't require a whitespace guard (CJK in particular runs without spaces).
+const SENTENCE_TERMINALS_FIRM: &str = concat!(
+    "。！？",                       // CJK fullwidth
+    "\u{061F}",                     // Arabic ؟  (، ؛ are clause-level, see LONG)
+    "\u{0964}\u{0965}",             // Devanagari । ॥
+    "\u{0589}\u{055E}\u{055C}",     // Armenian ։ ՞ ՜
+    "\u{1362}",                     // Ethiopic ።
+    "\u{104B}",                     // Myanmar ။   (၊ is clause-level, see LONG)
+    "\u{17D4}\u{17D5}",             // Khmer ។ ៕
+    "\u{0F0D}\u{0F0E}",             // Tibetan ། ༎
+);
+
+/// Closing quotes/brackets that may follow a sentence terminal. Inside a
+/// regex character class — `\]` escapes the ASCII close-bracket.
+const SENTENCE_CLOSERS: &str = concat!(
+    "\"')",                         // ASCII " ' )
+    "\\]",                          // escaped ] for char-class
+    "」』）】〉》〕｠",              // CJK closers
+    "\u{2019}\u{201D}",             // curly ' "
+);
+
 /// Regex: sentence-ending punctuation with optional closing quotes/brackets.
-static RE_SENTENCE_BOUNDARY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[.!?…]["')\]]*(?:\s+|$)"#).unwrap());
+/// Two alternations:
+/// - Ambiguous Latin terminal + closer + (whitespace | end)
+/// - Firm script-specific terminal + closer (self-delimiting; whitespace
+///   optional, since CJK/Arabic etc. often run without spaces).
+static RE_SENTENCE_BOUNDARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?:[{a}][{c}]*(?:\s+|$)|[{f}][{c}]*\s*)",
+        a = SENTENCE_TERMINALS_AMBIGUOUS,
+        f = SENTENCE_TERMINALS_FIRM,
+        c = SENTENCE_CLOSERS,
+    ))
+    .unwrap()
+});
 
-/// Regex: text ending with sentence punctuation.
-static RE_SENTENCE_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[.!?…]["')\]]*\s*$"#).unwrap());
+/// Regex: text ending with sentence punctuation. Either family of terminal
+/// is acceptable here — the trailing `\s*$` already disambiguates Latin `.`.
+static RE_SENTENCE_END: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"[{a}{f}][{c}]*\s*$",
+        a = SENTENCE_TERMINALS_AMBIGUOUS,
+        f = SENTENCE_TERMINALS_FIRM,
+        c = SENTENCE_CLOSERS,
+    ))
+    .unwrap()
+});
 
-/// Regex: comma/semicolon followed by space and an uppercase letter (fallback for long segments).
-static RE_LONG_SEGMENT_BOUNDARY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[,;]["')\]]*\s+[A-Z]"#).unwrap());
+/// Regex: secondary pause punctuation that signals a likely cut point in a
+/// long un-terminated segment. Two arms:
+/// - CJK / Arabic / Greek / Myanmar comma-like punctuation: cut directly
+///   after (no whitespace required, since these scripts often write without
+///   spaces).
+/// - ASCII comma/semicolon: keep the original "+ space + uppercase" guard so
+///   English/Cyrillic prose doesn't cut on every comma.
+static RE_LONG_SEGMENT_BOUNDARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r#"(?:[，、；：\u{060C}\u{061B}\u{0387}\u{104A}]"#,
+        r#"["')\]」』）】〉》〕｠]*"#,
+        r#"|[,;]["')\]]*\s+[A-Z\u{0400}-\u{04FF}])"#,
+    ))
+    .unwrap()
+});
 
 /// Regex: whitespace before punctuation (for join cleanup).
 static RE_SPACE_BEFORE_PUNCT: LazyLock<Regex> =
@@ -77,9 +148,29 @@ static RE_SPACE_BEFORE_PUNCT: LazyLock<Regex> =
 static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 /// Regex: short numbered prefix fragments such as "10." that should not be
-/// treated as a complete sentence when followed by more text.
-static RE_NUMBERED_PREFIX_FRAGMENT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{1,3}[.):]?$").unwrap());
+/// treated as a complete sentence when followed by more text. Includes
+/// fullwidth digits and fullwidth `．）` for CJK-formatted lists.
+static RE_NUMBERED_PREFIX_FRAGMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[\d\u{FF10}-\u{FF19}]{1,3}[.):）．]?$").unwrap()
+});
+
+/// Regex: any CJK ideograph / kana / hangul char. Used to lower the
+/// long-segment threshold for scripts where 80 chars overshoots a clause.
+static RE_CJK_OR_KANA: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[\u{4E00}-\u{9FFF}\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{AC00}-\u{D7AF}]")
+        .unwrap()
+});
+
+/// Char-count threshold above which the long-segment fallback may fire.
+/// CJK/Kana/Hangul: 40, since one char is one glyph and 80 chars often spans
+/// multiple sentences. Other scripts: 80, matching the Latin assumption.
+fn long_threshold(text: &str) -> usize {
+    if RE_CJK_OR_KANA.is_match(text) {
+        40
+    } else {
+        80
+    }
+}
 
 fn is_standalone_numbered_prefix(text: &str) -> bool {
     RE_NUMBERED_PREFIX_FRAGMENT.is_match(text.trim())
@@ -94,7 +185,7 @@ fn is_sentence_complete(source_text: &str) -> bool {
     if RE_SENTENCE_END.is_match(text) {
         return !is_standalone_numbered_prefix(text);
     }
-    text.chars().count() > 80 && RE_LONG_SEGMENT_BOUNDARY.is_match(text)
+    text.chars().count() > long_threshold(text) && RE_LONG_SEGMENT_BOUNDARY.is_match(text)
 }
 
 fn split_first_sentence(source_text: &str) -> (Option<String>, String) {
@@ -108,7 +199,7 @@ fn split_first_sentence(source_text: &str) -> (Option<String>, String) {
         }
         return (Some(first.to_string()), remainder.to_string());
     }
-    if text.chars().count() > 80 {
+    if text.chars().count() > long_threshold(text) {
         if let Some(m) = RE_LONG_SEGMENT_BOUNDARY.find(text) {
             let end = m.end();
             return (
@@ -1571,6 +1662,146 @@ mod tests {
     #[test]
     fn sentence_complete_rejects_numbered_prefix_fragment() {
         assert!(!is_sentence_complete("10."));
+    }
+
+    // ── Multi-script sentence terminals ──
+
+    #[test]
+    fn sentence_complete_recognizes_cjk_terminals() {
+        assert!(is_sentence_complete("こんにちは世界。"));
+        assert!(is_sentence_complete("你好世界！"));
+        assert!(is_sentence_complete("どう思います？"));
+        assert!(is_sentence_complete("끝났습니다。"));
+        // No terminal — must not be reported complete.
+        assert!(!is_sentence_complete("途中で切れた"));
+        assert!(!is_sentence_complete("被打断的句子"));
+    }
+
+    #[test]
+    fn sentence_complete_recognizes_arabic() {
+        assert!(is_sentence_complete("مرحبا بالعالم؟"));
+        // Arabic ، (comma) and ؛ (semicolon) are clause-level, not sentence
+        // terminals — they belong in the long-segment fallback, not here.
+        assert!(!is_sentence_complete("نعم،"));
+        assert!(!is_sentence_complete("نعم؛"));
+    }
+
+    #[test]
+    fn sentence_complete_recognizes_devanagari() {
+        assert!(is_sentence_complete("नमस्ते दुनिया।"));
+        assert!(is_sentence_complete("समाप्त॥"));
+    }
+
+    #[test]
+    fn sentence_complete_recognizes_armenian() {
+        assert!(is_sentence_complete("Բարեւ աշխարհ։"));
+    }
+
+    #[test]
+    fn sentence_complete_recognizes_ethiopic() {
+        assert!(is_sentence_complete("ሰላም ዓለም።"));
+    }
+
+    #[test]
+    fn sentence_complete_recognizes_myanmar_khmer_tibetan() {
+        assert!(is_sentence_complete("မင်္ဂလာပါ။"));
+        assert!(is_sentence_complete("សួស្ដី។"));
+        assert!(is_sentence_complete("བཀྲ་ཤིས་བདེ་ལེགས།"));
+    }
+
+    #[test]
+    fn split_first_sentence_cjk() {
+        let (first, rest) = split_first_sentence("いいね。次の文。");
+        assert_eq!(first.as_deref(), Some("いいね。"));
+        assert_eq!(rest, "次の文。");
+
+        let (first, rest) = split_first_sentence("第一句！第二句？");
+        assert_eq!(first.as_deref(), Some("第一句！"));
+        assert_eq!(rest, "第二句？");
+    }
+
+    #[test]
+    fn split_first_sentence_with_cjk_closer() {
+        let (first, rest) = split_first_sentence("「こんにちは。」次の話。");
+        assert_eq!(first.as_deref(), Some("「こんにちは。」"));
+        assert_eq!(rest, "次の話。");
+    }
+
+    #[test]
+    fn split_first_sentence_arabic_devanagari() {
+        let (first, rest) = split_first_sentence("مرحبا؟ كيف حالك؟");
+        assert_eq!(first.as_deref(), Some("مرحبا؟"));
+        assert_eq!(rest, "كيف حالك؟");
+
+        let (first, rest) = split_first_sentence("नमस्ते। आप कैसे हैं।");
+        assert_eq!(first.as_deref(), Some("नमस्ते।"));
+        assert_eq!(rest, "आप कैसे हैं।");
+    }
+
+    #[test]
+    fn long_segment_boundary_cjk_comma_cuts_runaway() {
+        // 41+ CJK chars without sentence-final punctuation but with 、:
+        // the CJK threshold is 40, so the long-fallback must fire.
+        let text = "今日はとても良い天気で、とても暖かくて気持ちが良くて散歩日和ですから外に出て一緒に歩きましょう";
+        assert!(text.chars().count() > 40);
+        assert!(is_sentence_complete(text));
+        let (first, rest) = split_first_sentence(text);
+        assert_eq!(first.as_deref(), Some("今日はとても良い天気で、"));
+        assert!(!rest.is_empty());
+    }
+
+    #[test]
+    fn numbered_prefix_handles_fullwidth() {
+        assert!(is_standalone_numbered_prefix("１０．"));
+        assert!(is_standalone_numbered_prefix("１．"));
+        assert!(is_standalone_numbered_prefix("12)"));
+        assert!(!is_sentence_complete("１０．"));
+    }
+
+    /// Regression: replays the segment chain from session
+    /// `f91a8405539142f28f5eba2e0a79fb74` (ja → zh-CN, 2026-06-17). Before the
+    /// CJK terminal fix, `is_sentence_complete` returned false for every line
+    /// here because the regex only knew ASCII `.!?…`; open_tail accumulated
+    /// across 16 segments until an English ad with ASCII `.` finally flushed
+    /// it. Each line below ends with a CJK terminal — every one must now be
+    /// recognized as complete.
+    #[test]
+    fn regression_jp_session_does_not_accumulate() {
+        let lines = [
+            "フィンランドとか はい、そんなウェールズ人ってかその方ですよ。",
+            "いいなのはスウェーデンだと思うんですね。",
+            "え、なんかマジのタクシーが好きで。",
+            "お客様なので、見たいな。",
+            "何か行きたくないとか嫌いな国だってあります。",
+            "どんなところだと思います？",
+            "はい、そう言ってるか、この辺は怖いな。",
+            "あの、いいね。",
+            "あんまり発展してないよな。",
+            "1年どこですか?",
+        ];
+        for line in lines {
+            assert!(
+                is_sentence_complete(line),
+                "must flush per-line, got open: {line:?}"
+            );
+        }
+
+        // And split_first_sentence must keep open_tail's remainder empty for
+        // a single complete CJK utterance — otherwise the chain still leaks.
+        let (first, rest) = split_first_sentence("いいなのはスウェーデンだと思うんですね。");
+        assert_eq!(first.as_deref(), Some("いいなのはスウェーデンだと思うんですね。"));
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn regression_latin_behaviour_preserved() {
+        // The character-class extension is monotonic — Latin behaviour must
+        // not regress.
+        assert!(is_sentence_complete("Hello world."));
+        assert!(!is_sentence_complete("partial fragment"));
+        let (first, rest) = split_first_sentence("Hello world. Next sentence.");
+        assert_eq!(first.as_deref(), Some("Hello world."));
+        assert_eq!(rest, "Next sentence.");
     }
 
     #[test]
