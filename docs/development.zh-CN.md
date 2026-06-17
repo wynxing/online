@@ -42,9 +42,11 @@ cargo test
 ```text
 apps/desktop/src-tauri/src/
 ├── commands/      # Tauri invoke 处理器
-├── api/           # ASR 和翻译客户端
-├── audio/         # 设备枚举与 cpal 采集
-├── pipeline/      # 采集、分段、ASR、翻译、事件发送
+├── api/           # ASR 净化、ASR 客户端、翻译客户端
+├── audio/         # 设备枚举与采集后端
+├── pipeline/      # 采集、DSP、分段、ASR、幻觉过滤、翻译、事件发送
+│   ├── mod.rs     # 主管道编排器
+│   └── audio_dsp.rs  # 降噪、归一化、重采样
 ├── storage/       # SQLite 持久化
 ├── models.rs      # 与 TypeScript 共享的 Serde 模型
 └── state.rs       # 应用状态

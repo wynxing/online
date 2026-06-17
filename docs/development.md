@@ -41,7 +41,9 @@ apps/desktop/src-tauri/src/
 +-- commands/      # Tauri invoke handlers
 +-- api/           # ASR sanitization, ASR client, translation client
 +-- audio/         # Device discovery and capture backends
-+-- pipeline/      # Capture, segment, ASR, translation, emit
++-- pipeline/      # Capture, DSP, segment, ASR, hallucination filter, translation, emit
+|   +-- mod.rs     # Main pipeline orchestrator
+|   +-- audio_dsp.rs  # Denoise, normalize, resample
 +-- storage/       # SQLite persistence
 +-- models.rs      # Serde models shared with TypeScript
 +-- state.rs       # App state

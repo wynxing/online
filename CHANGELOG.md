@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-15
+
+### Added
+
+- **Audio DSP preprocessing** — RNN-based denoise (`nnnoiseless`) and peak normalization applied before ASR, configurable via `audio_denoise_enabled` and `audio_peak_normalize_enabled` in RuntimeConfig.
+- **ASR hallucination detection** — Whisper repeating-prompt filter in the pipeline; suspected hallucinations are dropped and consecutive counts tracked.
+- **ASR output sanitizer** — rejects known Whisper noise outputs (e.g. "thank you", "subscribe") at the API client layer before they reach translation.
+
+### Fixed
+
+- Clippy warning resolved (`unnecessary_map_or`); `cargo fmt` applied.
+
+## [0.6.0] - 2026-06-15
+
+### Added
+
+- **VAD toggle** — `vad_enabled` config field and UI checkbox in Settings panel, allowing users to enable/disable voice activity detection.
+- **Translation prompt improvement** — refined system prompt for better translation quality.
+- **SSE byte-level parsing** — improved streaming response parsing for translation API.
+
 ## [0.5.0] - 2026-06-14
 
 ### Changed
