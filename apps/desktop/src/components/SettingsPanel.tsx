@@ -1,5 +1,8 @@
 import { Save, SlidersHorizontal } from "lucide-react";
 import { t, useLang } from "../i18n";
+import { getAsrCode } from "../constants/languages";
+import { LangSelect } from "./LangSelect";
+import { AsrLangSelect } from "./AsrLangSelect";
 import type { RuntimeConfig } from "../types";
 
 interface SettingsPanelProps {
@@ -78,11 +81,12 @@ export function SettingsPanel({
         </label>
         <label className="field">
           <span>{t("settings.recognitionLanguage", lang)}</span>
-          <input
+          <AsrLangSelect
             value={config.asrLanguage}
             placeholder={t("settings.asrLanguagePlaceholder", lang)}
-            onChange={(event) => setConfig({ ...config, asrLanguage: event.target.value })}
+            onChange={(v) => setConfig({ ...config, asrLanguage: v })}
           />
+          <div className="device-note">{t("settings.asrLanguageHint", lang)}</div>
         </label>
         <button className="secondary-button" disabled={testing !== null} onClick={onTestAsr}>
           {testing === "asr" ? t("common.testing", lang) : t("settings.testAsr", lang)}
@@ -125,18 +129,27 @@ export function SettingsPanel({
         <div className="settings-columns">
           <label className="field">
             <span>{t("settings.sourceLanguage", lang)}</span>
-            <input
+            <LangSelect
               value={config.sourceLang}
               placeholder={t("settings.sourceLanguagePlaceholder", lang)}
-              onChange={(event) => setConfig({ ...config, sourceLang: event.target.value })}
+              onChange={(v) => {
+                const oldDerived = getAsrCode(config.sourceLang);
+                const shouldUpdateAsr =
+                  config.asrLanguage === "" || config.asrLanguage === oldDerived;
+                setConfig({
+                  ...config,
+                  sourceLang: v,
+                  asrLanguage: shouldUpdateAsr ? getAsrCode(v) : config.asrLanguage,
+                });
+              }}
             />
           </label>
           <label className="field">
             <span>{t("settings.targetLanguage", lang)}</span>
-            <input
+            <LangSelect
               value={config.targetLang}
               placeholder={t("settings.targetLanguagePlaceholder", lang)}
-              onChange={(event) => setConfig({ ...config, targetLang: event.target.value })}
+              onChange={(v) => setConfig({ ...config, targetLang: v })}
             />
           </label>
         </div>

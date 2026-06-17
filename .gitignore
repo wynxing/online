@@ -7,3 +7,4 @@ build/
 .codebuddy/
 coverage/
 .vitest/
+_session_dump*.json

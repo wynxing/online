@@ -39,6 +39,7 @@ import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useTheme } from "./hooks/useTheme";
 import { t, detectLang, LangProvider } from "./i18n";
 import type { Lang } from "./i18n";
+import { getLangDisplayName, getAsrCode } from "./constants/languages";
 import logoUrl from "./assets/brand/logo.png";
 import type {
   Device,
@@ -79,7 +80,11 @@ const defaultConfig: RuntimeConfig = {
 };
 
 function normalizeConfig(config: RuntimeConfig): RuntimeConfig {
-  return { ...defaultConfig, ...config };
+  const merged = { ...defaultConfig, ...config };
+  if (!merged.asrLanguage) {
+    merged.asrLanguage = getAsrCode(merged.sourceLang);
+  }
+  return merged;
 }
 
 function preferAvailableDevice(config: RuntimeConfig, devices: Device[]): RuntimeConfig {
@@ -363,6 +368,8 @@ function MainConsole() {
     glossary: t("tab.glossary", lang),
   };
 
+  const norm = normalizeConfig(config);
+
   return (
     <LangProvider value={lang}>
       <div className="app-shell">
@@ -426,7 +433,9 @@ function MainConsole() {
           />
           <header className="topbar">
             <div>
-              <span className="eyebrow">{t("brand.sourceToTarget", lang)}</span>
+              <span className="eyebrow">
+                {getLangDisplayName(norm.sourceLang)} → {getLangDisplayName(norm.targetLang)}
+              </span>
               <h1>{tabTitle[tab]}</h1>
             </div>
             <div className="topbar-actions">

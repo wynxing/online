@@ -140,7 +140,15 @@ impl RuntimeConfig {
         self.asr_base_url = self.asr_base_url.trim().trim_end_matches('/').to_string();
         self.api_key = self.api_key.trim().to_string();
         self.asr_api_key = self.asr_api_key.trim().to_string();
-        self.asr_language = self.asr_language.trim().to_string();
+        self.asr_language = if self.asr_language.trim().is_empty() {
+            self.source_lang
+                .split('-')
+                .next()
+                .unwrap_or("en")
+                .to_string()
+        } else {
+            self.asr_language.trim().to_string()
+        };
         self.source_lang = if self.source_lang.trim().is_empty() {
             "en".into()
         } else {

@@ -1,3 +1,4 @@
+pub mod hallucinations;
 pub mod retry;
 
 use std::num::NonZeroUsize;
@@ -16,32 +17,6 @@ use crate::{
 };
 
 const CHAT_ASR_SYSTEM_PROMPT: &str = "You are a speech-to-text engine. Transcribe the input audio in the requested source language. Return only the transcript text. Do not translate. Do not explain. If the audio has no intelligible speech, return an empty string.";
-const WHISPER_HALLUCINATIONS: &[&str] = &[
-    "thank you",
-    "thanks for watching",
-    "subscribe",
-    "please subscribe",
-    "like and subscribe",
-    "please like",
-    "thank you for watching",
-    "thank you for listening",
-    "bye",
-    "goodbye",
-    "see you",
-    "see you next time",
-    "if you enjoyed",
-    "don't forget to",
-    "welcome back",
-    "hello everyone",
-    "[music]",
-    "[applause]",
-    "[laughter]",
-    "you",
-    "um",
-    "uh",
-    "ah",
-    "hmm",
-];
 
 // HTTP client timeout configuration (aligns with Python httpx settings).
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -70,6 +45,10 @@ static RE_NUMERIC_NOISE: LazyLock<Regex> =
 static RE_SHORT_MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z]$").unwrap());
 static RE_LATIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z]").unwrap());
 static RE_CJK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u{4e00}-\u{9fff}]").unwrap());
+static RE_CYRILLIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{Cyrillic}").unwrap());
+static RE_HANGUL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{Hangul}").unwrap());
+static RE_HIRAGANA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{Hiragana}").unwrap());
+static RE_KATAKANA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{Katakana}").unwrap());
 static RE_LEADING_LINE_NUMBER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*\d{1,3}\s*[.)\]:]\s*").unwrap());
 
@@ -693,15 +672,38 @@ fn sanitize_asr_text(raw_text: &str, source_lang: &str) -> SanitizedAsrText {
     {
         return rejected("numeric_or_symbol_noise");
     }
-    let lower = text.to_lowercase();
-    let normalized = lower.trim_matches(['.', ',', '!', '?', ';', ':']).trim();
-    if WHISPER_HALLUCINATIONS.contains(&normalized) {
+    if hallucinations::is_hallucination(&text, source_lang) {
         return rejected("whisper_hallucination");
     }
     let latin_count = RE_LATIN.find_iter(&text).count();
     let cjk_count = RE_CJK.find_iter(&text).count();
-    if source_lang.to_lowercase().starts_with("en") && cjk_count > 0 && latin_count == 0 {
-        return rejected("target_language_output");
+    // Multi-language script out-of-bounds detection.
+    // Short text (< 3 bytes) is skipped to avoid false positives.
+    if text.len() >= 3 {
+        let lang_prefix = source_lang
+            .split('-')
+            .next()
+            .unwrap_or("en")
+            .to_lowercase();
+        let is_out_of_bounds = match lang_prefix.as_str() {
+            // Latin-script sources: reject if output is pure CJK with no Latin
+            "en" | "fr" | "de" | "es" => cjk_count > 0 && latin_count == 0,
+            // Japanese: reject if output has CJK but no kana (model translated to Chinese)
+            "ja" => {
+                cjk_count > 0
+                    && RE_HIRAGANA.find_iter(&text).count() == 0
+                    && RE_KATAKANA.find_iter(&text).count() == 0
+            }
+            // Korean: reject if output has CJK but no Hangul
+            "ko" => cjk_count > 0 && RE_HANGUL.find_iter(&text).count() == 0,
+            // Russian: reject if output has CJK but no Cyrillic
+            "ru" => cjk_count > 0 && RE_CYRILLIC.find_iter(&text).count() == 0,
+            // zh-* and others: no out-of-bounds rejection
+            _ => false,
+        };
+        if is_out_of_bounds {
+            return rejected("target_language_output");
+        }
     }
     SanitizedAsrText {
         text,
@@ -1124,5 +1126,155 @@ mod tests {
             .unwrap();
         server.await.unwrap();
         assert_eq!(translated, "Hello world");
+    }
+
+    // ── Multi-language hallucination tests ──
+
+    #[test]
+    fn ja_hallucination_filtered() {
+        assert_eq!(
+            sanitize_asr_text("ご視聴ありがとうございました", "ja").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    #[test]
+    fn ko_hallucination_filtered() {
+        assert_eq!(
+            sanitize_asr_text("시청해주셔서 감사합니다", "ko").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    #[test]
+    fn ru_hallucination_filtered() {
+        assert_eq!(
+            sanitize_asr_text("Спасибо за просмотр", "ru").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    #[test]
+    fn fr_hallucination_filtered() {
+        assert_eq!(
+            sanitize_asr_text("Merci d'avoir regardé", "fr").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    #[test]
+    fn de_hallucination_filtered() {
+        assert_eq!(
+            sanitize_asr_text("Danke fürs zuschauen", "de").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    #[test]
+    fn es_hallucination_filtered() {
+        assert_eq!(
+            sanitize_asr_text("Gracias por ver", "es").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    // ── Multi-language out-of-bounds tests ──
+
+    #[test]
+    fn ja_chinese_only_rejected_as_target_language() {
+        assert_eq!(
+            sanitize_asr_text("感谢观看", "ja").reject_reason,
+            Some("target_language_output")
+        );
+    }
+
+    #[test]
+    fn ko_chinese_only_rejected_as_target_language() {
+        assert_eq!(
+            sanitize_asr_text("感谢观看", "ko").reject_reason,
+            Some("target_language_output")
+        );
+    }
+
+    #[test]
+    fn ru_chinese_only_rejected_as_target_language() {
+        assert_eq!(
+            sanitize_asr_text("感谢观看", "ru").reject_reason,
+            Some("target_language_output")
+        );
+    }
+
+    #[test]
+    fn fr_chinese_only_rejected_as_target_language() {
+        assert_eq!(
+            sanitize_asr_text("感谢观看", "fr").reject_reason,
+            Some("target_language_output")
+        );
+    }
+
+    // ── Normal text not falsely rejected ──
+
+    #[test]
+    fn ja_with_kana_not_rejected() {
+        assert_eq!(
+            sanitize_asr_text("こんにちは世界", "ja").reject_reason,
+            None
+        );
+    }
+
+    #[test]
+    fn ko_with_hangul_not_rejected() {
+        assert_eq!(
+            sanitize_asr_text("안녕하세요 세계", "ko").reject_reason,
+            None
+        );
+    }
+
+    #[test]
+    fn ru_with_cyrillic_not_rejected() {
+        assert_eq!(
+            sanitize_asr_text("Привет мир", "ru").reject_reason,
+            None
+        );
+    }
+
+    // ── Short text skips out-of-bounds ──
+
+    #[test]
+    fn short_text_skips_out_of_bounds_check() {
+        // Text < 3 bytes skips out-of-bounds detection to avoid false positives
+        // on very short utterances. "OK" is 2 bytes, so it's exempt.
+        assert_eq!(
+            sanitize_asr_text("OK", "fr").reject_reason,
+            None
+        );
+    }
+
+    // ── Common hallucination markers work for all languages ──
+
+    #[test]
+    fn common_hallucination_markers_filtered() {
+        assert_eq!(
+            sanitize_asr_text("[music]", "ja").reject_reason,
+            Some("whisper_hallucination")
+        );
+        assert_eq!(
+            sanitize_asr_text("[applause]", "ko").reject_reason,
+            Some("whisper_hallucination")
+        );
+        assert_eq!(
+            sanitize_asr_text("[laughter]", "ru").reject_reason,
+            Some("whisper_hallucination")
+        );
+    }
+
+    // ── Chinese source never triggers out-of-bounds ──
+
+    #[test]
+    fn zh_source_no_out_of_bounds_rejection() {
+        assert_eq!(
+            sanitize_asr_text("你好世界", "zh-CN").reject_reason,
+            None
+        );
     }
 }
