@@ -85,18 +85,11 @@ static HALLUCINATIONS: LazyLock<HashMap<&'static str, Vec<&'static str>>> = Lazy
     // Spanish
     m.insert(
         "es",
-        vec![
-            "gracias por ver",
-            "suscríbete al canal",
-            "hasta la próxima",
-        ],
+        vec!["gracias por ver", "suscríbete al canal", "hasta la próxima"],
     );
 
     // Language-agnostic noise markers
-    m.insert(
-        "_common",
-        vec!["[music]", "[applause]", "[laughter]"],
-    );
+    m.insert("_common", vec!["[music]", "[applause]", "[laughter]"]);
 
     m
 });

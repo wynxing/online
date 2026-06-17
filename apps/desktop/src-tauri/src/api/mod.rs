@@ -680,11 +680,7 @@ fn sanitize_asr_text(raw_text: &str, source_lang: &str) -> SanitizedAsrText {
     // Multi-language script out-of-bounds detection.
     // Short text (< 3 bytes) is skipped to avoid false positives.
     if text.len() >= 3 {
-        let lang_prefix = source_lang
-            .split('-')
-            .next()
-            .unwrap_or("en")
-            .to_lowercase();
+        let lang_prefix = source_lang.split('-').next().unwrap_or("en").to_lowercase();
         let is_out_of_bounds = match lang_prefix.as_str() {
             // Latin-script sources: reject if output is pure CJK with no Latin
             "en" | "fr" | "de" | "es" => cjk_count > 0 && latin_count == 0,
@@ -1232,10 +1228,7 @@ mod tests {
 
     #[test]
     fn ru_with_cyrillic_not_rejected() {
-        assert_eq!(
-            sanitize_asr_text("Привет мир", "ru").reject_reason,
-            None
-        );
+        assert_eq!(sanitize_asr_text("Привет мир", "ru").reject_reason, None);
     }
 
     // ── Short text skips out-of-bounds ──
@@ -1244,10 +1237,7 @@ mod tests {
     fn short_text_skips_out_of_bounds_check() {
         // Text < 3 bytes skips out-of-bounds detection to avoid false positives
         // on very short utterances. "OK" is 2 bytes, so it's exempt.
-        assert_eq!(
-            sanitize_asr_text("OK", "fr").reject_reason,
-            None
-        );
+        assert_eq!(sanitize_asr_text("OK", "fr").reject_reason, None);
     }
 
     // ── Common hallucination markers work for all languages ──
@@ -1272,9 +1262,6 @@ mod tests {
 
     #[test]
     fn zh_source_no_out_of_bounds_rejection() {
-        assert_eq!(
-            sanitize_asr_text("你好世界", "zh-CN").reject_reason,
-            None
-        );
+        assert_eq!(sanitize_asr_text("你好世界", "zh-CN").reject_reason, None);
     }
 }

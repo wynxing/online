@@ -78,23 +78,23 @@ const SENTENCE_TERMINALS_AMBIGUOUS: &str = ".!?…";
 /// only appear at sentence boundaries in their respective scripts, so we
 /// don't require a whitespace guard (CJK in particular runs without spaces).
 const SENTENCE_TERMINALS_FIRM: &str = concat!(
-    "。！？",                       // CJK fullwidth
-    "\u{061F}",                     // Arabic ؟  (، ؛ are clause-level, see LONG)
-    "\u{0964}\u{0965}",             // Devanagari । ॥
-    "\u{0589}\u{055E}\u{055C}",     // Armenian ։ ՞ ՜
-    "\u{1362}",                     // Ethiopic ።
-    "\u{104B}",                     // Myanmar ။   (၊ is clause-level, see LONG)
-    "\u{17D4}\u{17D5}",             // Khmer ។ ៕
-    "\u{0F0D}\u{0F0E}",             // Tibetan ། ༎
+    "。！？",                   // CJK fullwidth
+    "\u{061F}",                 // Arabic ؟  (، ؛ are clause-level, see LONG)
+    "\u{0964}\u{0965}",         // Devanagari । ॥
+    "\u{0589}\u{055E}\u{055C}", // Armenian ։ ՞ ՜
+    "\u{1362}",                 // Ethiopic ።
+    "\u{104B}",                 // Myanmar ။   (၊ is clause-level, see LONG)
+    "\u{17D4}\u{17D5}",         // Khmer ។ ៕
+    "\u{0F0D}\u{0F0E}",         // Tibetan ། ༎
 );
 
 /// Closing quotes/brackets that may follow a sentence terminal. Inside a
 /// regex character class — `\]` escapes the ASCII close-bracket.
 const SENTENCE_CLOSERS: &str = concat!(
-    "\"')",                         // ASCII " ' )
-    "\\]",                          // escaped ] for char-class
-    "」』）】〉》〕｠",              // CJK closers
-    "\u{2019}\u{201D}",             // curly ' "
+    "\"')",             // ASCII " ' )
+    "\\]",              // escaped ] for char-class
+    "」』）】〉》〕｠", // CJK closers
+    "\u{2019}\u{201D}", // curly ' "
 );
 
 /// Regex: sentence-ending punctuation with optional closing quotes/brackets.
@@ -150,15 +150,13 @@ static RE_MULTI_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unw
 /// Regex: short numbered prefix fragments such as "10." that should not be
 /// treated as a complete sentence when followed by more text. Includes
 /// fullwidth digits and fullwidth `．）` for CJK-formatted lists.
-static RE_NUMBERED_PREFIX_FRAGMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[\d\u{FF10}-\u{FF19}]{1,3}[.):）．]?$").unwrap()
-});
+static RE_NUMBERED_PREFIX_FRAGMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[\d\u{FF10}-\u{FF19}]{1,3}[.):）．]?$").unwrap());
 
 /// Regex: any CJK ideograph / kana / hangul char. Used to lower the
 /// long-segment threshold for scripts where 80 chars overshoots a clause.
 static RE_CJK_OR_KANA: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[\u{4E00}-\u{9FFF}\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{AC00}-\u{D7AF}]")
-        .unwrap()
+    Regex::new(r"[\u{4E00}-\u{9FFF}\u{3040}-\u{309F}\u{30A0}-\u{30FF}\u{AC00}-\u{D7AF}]").unwrap()
 });
 
 /// Char-count threshold above which the long-segment fallback may fire.
@@ -1789,7 +1787,10 @@ mod tests {
         // And split_first_sentence must keep open_tail's remainder empty for
         // a single complete CJK utterance — otherwise the chain still leaks.
         let (first, rest) = split_first_sentence("いいなのはスウェーデンだと思うんですね。");
-        assert_eq!(first.as_deref(), Some("いいなのはスウェーデンだと思うんですね。"));
+        assert_eq!(
+            first.as_deref(),
+            Some("いいなのはスウェーデンだと思うんですね。")
+        );
         assert_eq!(rest, "");
     }
 
