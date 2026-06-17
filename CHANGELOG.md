@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-17
+
+### Added
+
+- **Multi-language hallucination detection** — Whisper hallucination word list expanded from English-only to 7 languages (en/ja/ko/ru/fr/de/es) with per-language matching; extracted into dedicated `hallucinations` module.
+- **Script out-of-bounds detection** — ASR output validated against expected script family using Unicode property regex (Cyrillic, Hangul, Hiragana, Katakana); e.g. Japanese source producing CJK-only text without kana is rejected.
+- **Language selector dropdowns** — Settings panel now offers dropdown selectors for source, target, and ASR recognition languages with 9 pre-configured languages and a custom input fallback.
+- **Dynamic language display** — Top bar shows `源语言 → 目标语言` using native language names instead of hardcoded "EN → ZH-CN".
+
+### Changed
+
+- **i18n** — "Real-time Bilingual Subtitles" updated to "Real-time Multilingual Subtitles" in both zh/en.
+- **ASR language default** — `asr_language` now auto-derives from `source_lang` when left empty, instead of requiring manual entry.
+
 ## [0.7.0] - 2026-06-15
 
 ### Added
