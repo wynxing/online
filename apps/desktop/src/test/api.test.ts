@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   createGlossaryTerm,
   deleteGlossaryTerm,
@@ -15,43 +15,36 @@ import {
   testTranslation,
   updateGlossaryTerm,
 } from "../api";
-
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: mocks.invoke,
-}));
+import { invokeMock } from "./tauriMock";
 
 beforeEach(() => {
-  mocks.invoke.mockReset();
+  invokeMock.mockReset();
 });
 
 describe("api adapter", () => {
   it("calls health_check", async () => {
-    mocks.invoke.mockResolvedValue({ status: "ok" });
+    invokeMock.mockResolvedValue({ status: "ok" });
     await expect(health()).resolves.toEqual({ status: "ok" });
-    expect(mocks.invoke).toHaveBeenCalledWith("health_check");
+    expect(invokeMock).toHaveBeenCalledWith("health_check");
   });
 
   it("loads devices directly from list_devices", async () => {
     const devices = [
       { id: "input_0", name: "Microphone", kind: "microphone", isDefault: true, available: true },
     ];
-    mocks.invoke.mockResolvedValue(devices);
+    invokeMock.mockResolvedValue(devices);
     await expect(getDevices()).resolves.toEqual(devices);
-    expect(mocks.invoke).toHaveBeenCalledWith("list_devices");
+    expect(invokeMock).toHaveBeenCalledWith("list_devices");
   });
 
   it("loads and saves config", async () => {
     const config = { baseUrl: "https://api.openai.com/v1", apiKey: "test" };
-    mocks.invoke.mockResolvedValue(config);
+    invokeMock.mockResolvedValue(config);
     await expect(getConfig()).resolves.toEqual(config);
-    expect(mocks.invoke).toHaveBeenCalledWith("get_config");
+    expect(invokeMock).toHaveBeenCalledWith("get_config");
 
     await saveConfig(config as never);
-    expect(mocks.invoke).toHaveBeenCalledWith("save_config", { config });
+    expect(invokeMock).toHaveBeenCalledWith("save_config", { config });
   });
 
   it("maps session commands", async () => {
@@ -63,35 +56,35 @@ describe("api adapter", () => {
       asrProvider: "openai-compatible",
       translationProvider: "openai-compatible",
     };
-    mocks.invoke.mockResolvedValue({ id: "s1" });
+    invokeMock.mockResolvedValue({ id: "s1" });
     await startSession(body);
-    expect(mocks.invoke).toHaveBeenCalledWith("start_session", { request: body });
+    expect(invokeMock).toHaveBeenCalledWith("start_session", { request: body });
 
     await stopSession();
-    expect(mocks.invoke).toHaveBeenCalledWith("stop_session");
+    expect(invokeMock).toHaveBeenCalledWith("stop_session");
   });
 
   it("maps history and glossary commands", async () => {
-    mocks.invoke.mockResolvedValue([]);
+    invokeMock.mockResolvedValue([]);
     await getSessions();
-    expect(mocks.invoke).toHaveBeenCalledWith("list_sessions");
+    expect(invokeMock).toHaveBeenCalledWith("list_sessions");
 
     await getSessionSegments("s1");
-    expect(mocks.invoke).toHaveBeenCalledWith("get_segments", { sessionId: "s1" });
+    expect(invokeMock).toHaveBeenCalledWith("get_segments", { sessionId: "s1" });
 
     await getGlossary();
-    expect(mocks.invoke).toHaveBeenCalledWith("list_glossary");
+    expect(invokeMock).toHaveBeenCalledWith("list_glossary");
 
     const term = { source: "latency", target: "delay", enabled: true };
     await createGlossaryTerm(term);
-    expect(mocks.invoke).toHaveBeenCalledWith("create_glossary", { term });
+    expect(invokeMock).toHaveBeenCalledWith("create_glossary", { term });
 
     const saved = { id: "t1", ...term };
     await updateGlossaryTerm(saved);
-    expect(mocks.invoke).toHaveBeenCalledWith("update_glossary", { term: saved });
+    expect(invokeMock).toHaveBeenCalledWith("update_glossary", { term: saved });
 
     await deleteGlossaryTerm("t1");
-    expect(mocks.invoke).toHaveBeenCalledWith("delete_glossary", { id: "t1" });
+    expect(invokeMock).toHaveBeenCalledWith("delete_glossary", { id: "t1" });
   });
 
   it("maps connectivity tests", async () => {
@@ -103,9 +96,9 @@ describe("api adapter", () => {
       asrModel: "whisper-1",
       translationModel: "gpt-4o-mini",
     };
-    mocks.invoke.mockResolvedValue({ ok: true });
+    invokeMock.mockResolvedValue({ ok: true });
     await testAsr(config);
-    expect(mocks.invoke).toHaveBeenCalledWith("test_asr", {
+    expect(invokeMock).toHaveBeenCalledWith("test_asr", {
       request: {
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
@@ -116,7 +109,7 @@ describe("api adapter", () => {
     });
 
     await testTranslation(config);
-    expect(mocks.invoke).toHaveBeenCalledWith("test_translation", {
+    expect(invokeMock).toHaveBeenCalledWith("test_translation", {
       request: {
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
@@ -126,7 +119,7 @@ describe("api adapter", () => {
   });
 
   it("propagates invoke errors", async () => {
-    mocks.invoke.mockRejectedValue(new Error("not found"));
+    invokeMock.mockRejectedValue(new Error("not found"));
     await expect(health()).rejects.toThrow("not found");
   });
 });

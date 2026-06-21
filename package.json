@@ -21,8 +21,7 @@
   },
   "devDependencies": {
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.7",
-    "playwright": "^1.60.0"
+    "lint-staged": "^17.0.7"
   },
   "lint-staged": {
     "apps/desktop/src/**/*.{ts,tsx}": [
