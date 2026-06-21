@@ -14,6 +14,8 @@
     "lint:fix": "npm run lint:fix -w apps/desktop",
     "test": "npm run test -w apps/desktop",
     "test:coverage": "npm run test:coverage -w apps/desktop",
+    "test:version": "node --test scripts/check-version-consistency.test.mjs",
+    "version:check": "node scripts/check-version-consistency.mjs",
     "version:bump": "powershell -ExecutionPolicy Bypass -File scripts/bump-version.ps1",
     "prepare": "husky"
   },

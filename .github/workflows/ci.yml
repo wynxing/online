@@ -10,9 +10,29 @@ permissions:
   contents: read
 
 jobs:
+  metadata:
+    name: Version Metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test version checker
+        run: npm run test:version
+
+      - name: Verify version consistency
+        run: npm run version:check
+
   frontend:
     name: Frontend Lint & Test
     runs-on: ubuntu-latest
+    needs: metadata
 
     steps:
       - name: Checkout
@@ -39,6 +59,7 @@ jobs:
   rust:
     name: Rust Check & Test
     runs-on: ubuntu-latest
+    needs: metadata
 
     steps:
       - name: Checkout
