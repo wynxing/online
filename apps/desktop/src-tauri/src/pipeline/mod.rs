@@ -10,9 +10,13 @@ mod audio_dsp;
 
 use earshot::Detector;
 use regex::Regex;
+use serde::Serialize;
 
 use tauri::{AppHandle, Emitter};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc,
+    task::{JoinHandle, JoinSet},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -230,7 +234,7 @@ pub struct PipelineManager {
 struct ActivePipeline {
     session_id: String,
     cancel: CancellationToken,
-    handle: JoinHandle<()>,
+    handle: JoinHandle<AppResult<()>>,
 }
 
 impl PipelineManager {
@@ -267,7 +271,7 @@ impl PipelineManager {
         let active_session_id = session_id.clone();
         let cleanup_session_id = session_id.clone();
         let handle = tokio::spawn(async move {
-            if let Err(error) = run_pipeline(
+            let run_result = run_pipeline(
                 app.clone(),
                 storage,
                 session_id.clone(),
@@ -276,15 +280,34 @@ impl PipelineManager {
                 glossary,
                 token,
             )
-            .await
-            {
-                emit_error(&app, "PIPELINE_FAILED", &error.to_string(), false);
-                emit_status(&app, Some(session_id), "stopped");
-            }
-            let _ = cleanup_storage
+            .await;
+            let cleanup_result = cleanup_storage
                 .finish_session(cleanup_session_id.clone(), now_iso())
                 .await;
-            let Ok(mut guard) = inner.lock() else { return };
+            let result = match (run_result, cleanup_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(()), Err(error)) => Err(AppError::PipelineStage {
+                    stage: "session finalization",
+                    message: error.to_string(),
+                }),
+                (Err(error), Err(cleanup_error)) => {
+                    tracing::error!(
+                        error = %cleanup_error,
+                        session_id = %cleanup_session_id,
+                        "Failed to finalize session after pipeline failure"
+                    );
+                    Err(error)
+                }
+            };
+            if let Err(error) = &result {
+                emit_error(&app, fatal_error_code(error), &error.to_string(), false);
+            }
+            emit_status(&app, Some(session_id), "stopped");
+            let Ok(mut guard) = inner.lock() else {
+                tracing::error!("Pipeline state mutex was poisoned during cleanup");
+                return result;
+            };
             if guard
                 .as_ref()
                 .map(|active| active.session_id == cleanup_session_id)
@@ -292,6 +315,7 @@ impl PipelineManager {
             {
                 *guard = None;
             }
+            result
         });
         if let Ok(mut guard) = self.inner.lock() {
             *guard = Some(ActivePipeline {
@@ -303,14 +327,14 @@ impl PipelineManager {
         Ok(())
     }
 
-    pub async fn stop(&self) -> Option<String> {
+    pub async fn stop(&self) -> AppResult<Option<String>> {
         let active = self.inner.lock().ok().and_then(|mut g| g.take());
         if let Some(active) = active {
             active.cancel.cancel();
-            let _ = active.handle.await;
-            return Some(active.session_id);
+            active.handle.await??;
+            return Ok(Some(active.session_id));
         }
-        None
+        Ok(None)
     }
 
     pub fn blocking_stop(&self) {
@@ -334,13 +358,20 @@ impl PipelineManager {
             let abort_handle = handle.abort_handle();
             let (tx, rx) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
-                let _ = rt.block_on(handle);
-                let _ = tx.send(());
+                let _ = tx.send(rt.block_on(handle));
             });
-            if rx.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
-                // Pipeline didn't finish in time — abort to let app exit
-                tracing::warn!("blocking_stop: pipeline did not finish within 5s, aborting");
-                abort_handle.abort();
+            match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => {
+                    tracing::error!(error = %error, "Pipeline failed during blocking stop");
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(error = %error, "Pipeline task panicked during blocking stop");
+                }
+                Err(_) => {
+                    tracing::warn!("blocking_stop: pipeline did not finish within 5s, aborting");
+                    abort_handle.abort();
+                }
             }
             // Always join the worker thread to guarantee cleanup.
             // After abort, block_on returns immediately with JoinError.
@@ -372,7 +403,7 @@ async fn run_pipeline(
     let (asr_tx, asr_rx) = mpsc::channel::<RecognizedSegment>(32);
     let capture_token = token.clone();
     let capture_device = request.input_device_id.clone();
-    let capture = tokio::task::spawn_blocking(move || {
+    let mut capture = tokio::task::spawn_blocking(move || {
         audio::capture_blocking(capture_device, audio_tx, capture_token)
     });
 
@@ -381,82 +412,228 @@ async fn run_pipeline(
     let segment_queue_depth = Arc::new(AtomicUsize::new(0));
     let translation_queue_depth = Arc::new(AtomicUsize::new(0));
 
-    let segmenter = tokio::spawn(segmenter_task(
-        audio_rx,
-        segment_tx,
-        config.clone(),
-        token.clone(),
-        app.clone(),
-        session_id.clone(),
-        frame_counter.clone(),
-        segment_counter.clone(),
-        segment_queue_depth.clone(),
-    ));
-    let asr = tokio::spawn(asr_task(
-        segment_rx,
-        asr_tx,
-        AsrClient::from_config(&config),
-        config.asr_concurrency,
-        token.clone(),
-        app.clone(),
-        session_id.clone(),
-        segment_queue_depth.clone(),
-        config.segment_max_duration,
-    ));
+    let mut stages: JoinSet<(&'static str, AppResult<()>)> = JoinSet::new();
+    stages.spawn({
+        let token = token.clone();
+        let app = app.clone();
+        let session_id = session_id.clone();
+        let config = config.clone();
+        let frame_counter = frame_counter.clone();
+        let segment_counter = segment_counter.clone();
+        let segment_queue_depth = segment_queue_depth.clone();
+        async move {
+            (
+                "segmenter",
+                segmenter_task(
+                    audio_rx,
+                    segment_tx,
+                    config,
+                    token,
+                    app,
+                    session_id,
+                    frame_counter,
+                    segment_counter,
+                    segment_queue_depth,
+                )
+                .await,
+            )
+        }
+    });
+    stages.spawn({
+        let token = token.clone();
+        let app = app.clone();
+        let session_id = session_id.clone();
+        let segment_queue_depth = segment_queue_depth.clone();
+        let asr_client = AsrClient::from_config(&config);
+        let concurrency = config.asr_concurrency;
+        let max_duration = config.segment_max_duration;
+        async move {
+            (
+                "asr",
+                asr_task(
+                    segment_rx,
+                    asr_tx,
+                    asr_client,
+                    concurrency,
+                    token,
+                    app,
+                    session_id,
+                    segment_queue_depth,
+                    max_duration,
+                )
+                .await,
+            )
+        }
+    });
 
     let (reorder_tx, reorder_rx) = mpsc::channel::<TranslatedSegment>(32);
-    let dispatcher = tokio::spawn(translation_dispatcher(
-        asr_rx,
-        TranslationClient::from_config(&config),
-        config.translation_concurrency,
-        reorder_tx,
-        session_id.clone(),
-        request.source_lang.clone(),
-        request.target_lang.clone(),
-        glossary.clone(),
-        token.clone(),
-        app.clone(),
-        translation_queue_depth.clone(),
-    ));
-    let reorder = tokio::spawn(reorder_task(
-        reorder_rx,
-        TranslationClient::from_config(&config),
-        session_id.clone(),
-        request.source_lang,
-        request.target_lang,
-        glossary,
-        token.clone(),
-        app.clone(),
-        storage,
-    ));
+    stages.spawn({
+        let token = token.clone();
+        let app = app.clone();
+        let session_id = session_id.clone();
+        let source_lang = request.source_lang.clone();
+        let target_lang = request.target_lang.clone();
+        let glossary = glossary.clone();
+        let translation_queue_depth = translation_queue_depth.clone();
+        let translation = TranslationClient::from_config(&config);
+        let concurrency = config.translation_concurrency;
+        async move {
+            (
+                "translation",
+                translation_dispatcher(
+                    asr_rx,
+                    translation,
+                    concurrency,
+                    reorder_tx,
+                    session_id,
+                    source_lang,
+                    target_lang,
+                    glossary,
+                    token,
+                    app,
+                    translation_queue_depth,
+                )
+                .await,
+            )
+        }
+    });
+    stages.spawn({
+        let token = token.clone();
+        let app = app.clone();
+        let session_id = session_id.clone();
+        let translation = TranslationClient::from_config(&config);
+        async move {
+            (
+                "reorder",
+                reorder_task(
+                    reorder_rx,
+                    translation,
+                    session_id,
+                    request.source_lang,
+                    request.target_lang,
+                    glossary,
+                    token,
+                    app,
+                    storage,
+                )
+                .await,
+            )
+        }
+    });
+    stages.spawn({
+        let token = token.clone();
+        let app = app.clone();
+        let session_id = session_id.clone();
+        async move {
+            (
+                "monitor",
+                signal_monitor_task(frame_counter, segment_counter, token, app, session_id).await,
+            )
+        }
+    });
 
-    let monitor = tokio::spawn(signal_monitor_task(
-        frame_counter,
-        segment_counter,
-        token.clone(),
-        app.clone(),
-        session_id.clone(),
-    ));
-
-    tokio::select! {
-        result = capture => {
+    let mut capture_finished = false;
+    let mut failure = tokio::select! {
+        result = &mut capture => {
+            capture_finished = true;
             match result {
-                Ok(Ok(_device)) => {}
-                Ok(Err(error)) => return Err(error),
+                Ok(Ok(_device)) => None,
+                Ok(Err(error)) => Some(error),
+                Err(error) => Some(AppError::Join(error)),
+            }
+        }
+        stage = stages.join_next() => {
+            match stage {
+                Some(Ok((_stage, Err(error)))) => Some(error),
+                Some(Ok((stage, Ok(())))) if !token.is_cancelled() => Some(AppError::PipelineStage {
+                    stage,
+                    message: "ended unexpectedly".into(),
+                }),
+                Some(Err(error)) => Some(AppError::Join(error)),
+                _ => None,
+            }
+        }
+        _ = token.cancelled() => None,
+    };
+
+    token.cancel();
+    let join_timeout = std::time::Duration::from_secs(8);
+    if !capture_finished {
+        match tokio::time::timeout(join_timeout, &mut capture).await {
+            Ok(Ok(Ok(_device))) => {}
+            Ok(Ok(Err(error))) => set_first_failure(&mut failure, error),
+            Ok(Err(error)) => set_first_failure(&mut failure, AppError::Join(error)),
+            Err(_) => {
+                capture.abort();
+                set_first_failure(&mut failure, AppError::TaskTimeout("audio capture"));
+            }
+        }
+    }
+    if let Err(error) = drain_pipeline_stages(&mut stages, join_timeout).await {
+        set_first_failure(&mut failure, error);
+    }
+
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn set_first_failure(current: &mut Option<AppError>, error: AppError) {
+    if current.is_none() {
+        *current = Some(error);
+    } else {
+        tracing::error!(error = %error, "Additional pipeline failure during shutdown");
+    }
+}
+
+async fn drain_pipeline_stages(
+    stages: &mut JoinSet<(&'static str, AppResult<()>)>,
+    duration: std::time::Duration,
+) -> AppResult<()> {
+    let drain = async {
+        while let Some(result) = stages.join_next().await {
+            match result {
+                Ok((_stage, Ok(()))) => {}
+                Ok((_stage, Err(error))) => return Err(error),
                 Err(error) => return Err(AppError::Join(error)),
             }
         }
-        _ = token.cancelled() => {}
+        Ok(())
+    };
+    match tokio::time::timeout(duration, drain).await {
+        Ok(result) => result,
+        Err(_) => {
+            stages.abort_all();
+            while stages.join_next().await.is_some() {}
+            Err(AppError::TaskTimeout("pipeline stages"))
+        }
     }
+}
 
-    let join_timeout = std::time::Duration::from_secs(8);
-    let _ = tokio::time::timeout(join_timeout, segmenter).await;
-    let _ = tokio::time::timeout(join_timeout, asr).await;
-    let _ = tokio::time::timeout(join_timeout, dispatcher).await;
-    let _ = tokio::time::timeout(join_timeout, reorder).await;
-    let _ = tokio::time::timeout(join_timeout, monitor).await;
-    emit_status(&app, Some(session_id), "stopped");
-    Ok(())
+async fn drain_workers(stage: &'static str, workers: &mut JoinSet<()>) -> AppResult<()> {
+    drain_workers_with_timeout(stage, workers, std::time::Duration::from_secs(5)).await
+}
+
+async fn drain_workers_with_timeout(
+    stage: &'static str,
+    workers: &mut JoinSet<()>,
+    duration: std::time::Duration,
+) -> AppResult<()> {
+    let drain = async {
+        while let Some(result) = workers.join_next().await {
+            result.map_err(AppError::Join)?;
+        }
+        Ok(())
+    };
+    match tokio::time::timeout(duration, drain).await {
+        Ok(result) => result,
+        Err(_) => {
+            workers.abort_all();
+            while workers.join_next().await.is_some() {}
+            Err(AppError::TaskTimeout(stage))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -535,7 +712,7 @@ async fn segmenter_task(
     frame_counter: Arc<AtomicU64>,
     segment_counter: Arc<AtomicU64>,
     segment_queue_depth: Arc<AtomicUsize>,
-) {
+) -> AppResult<()> {
     let mut sample_rate = 48_000u32;
     let mut channels = 1u16;
     // Buffer always stores 16 kHz mono (preprocessed) samples.
@@ -745,6 +922,7 @@ async fn segmenter_task(
         )
         .await;
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -758,15 +936,33 @@ async fn asr_task(
     session_id: String,
     segment_queue_depth: Arc<AtomicUsize>,
     max_segment_duration: f32,
-) {
+) -> AppResult<()> {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let recent_source: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let worker_id_counter = Arc::new(AtomicU64::new(0));
     let consecutive_empty = Arc::new(AtomicU32::new(0));
     let consecutive_hallucination = Arc::new(AtomicU32::new(0));
-    let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    let mut workers = JoinSet::new();
 
-    while let Some(segment) = rx.recv().await {
+    loop {
+        let segment = if workers.is_empty() {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                segment = rx.recv() => segment,
+            }
+        } else {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                result = workers.join_next() => {
+                    if let Some(result) = result {
+                        result.map_err(AppError::Join)?;
+                    }
+                    continue;
+                }
+                segment = rx.recv() => segment,
+            }
+        };
+        let Some(segment) = segment else { break };
         let _ = segment_queue_depth
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
         if token.is_cancelled() {
@@ -813,7 +1009,7 @@ async fn asr_task(
         let segment_queue_depth = segment_queue_depth.clone();
         let worker_id = worker_id_counter.fetch_add(1, Ordering::Relaxed);
 
-        workers.push(tokio::spawn(async move {
+        workers.spawn(async move {
             let queue_lag_ms = segment.created_at.elapsed().as_secs_f32() * 1000.0;
             let started = Instant::now();
             let (prepared, prep_ch, prep_rate) =
@@ -862,7 +1058,7 @@ async fn asr_task(
                         updated_at: now_iso(),
                         superseded_by: None,
                     };
-                    let _ = app.emit("subtitle:segment-created", &interim);
+                    emit_logged(&app, "subtitle:segment-created", &interim);
                     emit_metrics(
                         &app,
                         PipelineMetricsPayload {
@@ -929,13 +1125,10 @@ async fn asr_task(
                 }
             }
             drop(permit);
-        }));
+        });
     }
 
-    // Wait for in-flight ASR workers to finish, abort stragglers.
-    for handle in workers {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
-    }
+    drain_workers("asr workers", &mut workers).await
 }
 
 struct OpenTail {
@@ -1016,14 +1209,32 @@ async fn translation_dispatcher(
     token: CancellationToken,
     app: AppHandle,
     translation_queue_depth: Arc<AtomicUsize>,
-) {
+) -> AppResult<()> {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let translation = Arc::new(translation);
     let glossary = Arc::new(glossary);
     let worker_id_counter = Arc::new(AtomicU64::new(0));
-    let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    let mut workers = JoinSet::new();
 
-    while let Some(segment) = rx.recv().await {
+    loop {
+        let segment = if workers.is_empty() {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                segment = rx.recv() => segment,
+            }
+        } else {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                result = workers.join_next() => {
+                    if let Some(result) = result {
+                        result.map_err(AppError::Join)?;
+                    }
+                    continue;
+                }
+                segment = rx.recv() => segment,
+            }
+        };
+        let Some(segment) = segment else { break };
         if token.is_cancelled() {
             break;
         }
@@ -1058,7 +1269,7 @@ async fn translation_dispatcher(
         let glossary = glossary.clone();
         let _worker_id = worker_id_counter.fetch_add(1, Ordering::Relaxed);
 
-        workers.push(tokio::spawn(async move {
+        workers.spawn(async move {
             let seq = extract_sequence(&segment.id);
             let started = Instant::now();
 
@@ -1069,7 +1280,8 @@ async fn translation_dispatcher(
             // Spawn a task to forward tokens from the channel to Tauri events.
             let emitter = tokio::spawn(async move {
                 while let Some(token) = token_rx.recv().await {
-                    let _ = app_clone.emit(
+                    emit_logged(
+                        &app_clone,
                         "subtitle:token",
                         serde_json::json!({
                             "segment_id": seg_id,
@@ -1090,7 +1302,9 @@ async fn translation_dispatcher(
                     Some(token_tx),
                 )
                 .await;
-            let _ = emitter.await;
+            if let Err(error) = emitter.await {
+                tracing::error!(error = %error, "Translation token emitter task panicked");
+            }
 
             match result {
                 Ok(translated_text) => {
@@ -1115,13 +1329,10 @@ async fn translation_dispatcher(
                 }
             }
             drop(permit);
-        }));
+        });
     }
 
-    // Wait for in-flight translation workers to finish, abort stragglers.
-    for handle in workers {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
-    }
+    drain_workers("translation workers", &mut workers).await
 }
 
 /// Receives translated segments out-of-order, buffers them, and emits in sequence.
@@ -1137,7 +1348,7 @@ async fn reorder_task(
     token: CancellationToken,
     app: AppHandle,
     storage: Storage,
-) {
+) -> AppResult<()> {
     use std::collections::BTreeMap;
 
     let mut pending: BTreeMap<u64, TranslatedSegment> = BTreeMap::new();
@@ -1171,7 +1382,7 @@ async fn reorder_task(
                 &app,
                 &storage,
             )
-            .await;
+            .await?;
             next_seq += 1;
         }
 
@@ -1225,8 +1436,9 @@ async fn reorder_task(
             &app,
             &storage,
         )
-        .await;
+        .await?;
     }
+    Ok(())
 }
 
 /// Emit a translated segment, handling open_tail sentence-completion correction.
@@ -1245,7 +1457,7 @@ async fn emit_translated_segment(
     translation: &TranslationClient,
     app: &AppHandle,
     storage: &Storage,
-) {
+) -> AppResult<()> {
     if let Some(tail) = open_tail.take() {
         // Previous incomplete segment — correction path requires re-translation.
         let combined = join_source_text(&[&tail.source_text, &segment.source_text]);
@@ -1277,8 +1489,13 @@ async fn emit_translated_segment(
                     updated_at: now_iso(),
                     superseded_by: None,
                 };
-                let _ = storage.upsert_segment(corrected.clone()).await;
-                let _ = app.emit("subtitle:segment-corrected", &corrected);
+                persist_and_emit(
+                    storage,
+                    app,
+                    "subtitle:segment-corrected",
+                    corrected.clone(),
+                )
+                .await?;
                 emit_translation_metrics(app, &corrected, &tail.segment, correction_ms);
                 context.push((corrected.source_text.clone(), correction_text));
                 trim_context(context);
@@ -1317,8 +1534,7 @@ async fn emit_translated_segment(
             updated_at: now_iso(),
             superseded_by: None,
         };
-        let _ = storage.upsert_segment(subtitle.clone()).await;
-        let _ = app.emit("subtitle:segment-updated", &subtitle);
+        persist_and_emit(storage, app, "subtitle:segment-updated", subtitle.clone()).await?;
         emit_translation_metrics(app, &subtitle, &segment, translation_ms);
         context.push((segment.source_text.clone(), translated_text));
         trim_context(context);
@@ -1327,6 +1543,7 @@ async fn emit_translated_segment(
             *open_tail = Some(make_open_tail(segment, subtitle.source_text.clone(), 2));
         }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1340,7 +1557,7 @@ async fn flush_open_tail(
     context: &[(String, String)],
     app: &AppHandle,
     storage: &Storage,
-) {
+) -> AppResult<()> {
     let started = Instant::now();
     match translation
         .translate(
@@ -1366,12 +1583,12 @@ async fn flush_open_tail(
                 updated_at: now_iso(),
                 superseded_by: None,
             };
-            let _ = storage.upsert_segment(subtitle.clone()).await;
-            let _ = app.emit("subtitle:segment-updated", &subtitle);
+            persist_and_emit(storage, app, "subtitle:segment-updated", subtitle.clone()).await?;
             emit_translation_metrics(app, &subtitle, &tail.segment, translation_ms);
         }
         Err(error) => emit_error(app, "TRANSLATION_FAILED", &error.to_string(), true),
     }
+    Ok(())
 }
 
 fn emit_translation_metrics(
@@ -1447,6 +1664,34 @@ fn emit_queue_metrics(app: &AppHandle, session_id: &str, translation_queue_size:
     );
 }
 
+async fn persist_and_emit(
+    storage: &Storage,
+    app: &AppHandle,
+    event: &'static str,
+    segment: SubtitleSegment,
+) -> AppResult<()> {
+    persist_then(storage, segment, |segment| emit_logged(app, event, segment)).await
+}
+
+async fn persist_then<F>(
+    storage: &Storage,
+    segment: SubtitleSegment,
+    on_persisted: F,
+) -> AppResult<()>
+where
+    F: FnOnce(&SubtitleSegment),
+{
+    storage.upsert_segment(segment.clone()).await?;
+    on_persisted(&segment);
+    Ok(())
+}
+
+fn emit_logged<S: Serialize + Clone>(app: &AppHandle, event: &'static str, payload: S) {
+    if let Err(error) = app.emit(event, payload) {
+        tracing::error!(event, error = %error, "Failed to emit Tauri event");
+    }
+}
+
 fn trim_context(context: &mut Vec<(String, String)>) {
     if context.len() > 8 {
         context.remove(0);
@@ -1519,7 +1764,8 @@ fn is_likely_hallucination(new_text: &str, recent_source: &Option<String>) -> bo
 }
 
 fn emit_status(app: &AppHandle, session_id: Option<String>, status: &str) {
-    let _ = app.emit(
+    emit_logged(
+        app,
         "session:status",
         SessionStatusPayload {
             session_id,
@@ -1530,7 +1776,8 @@ fn emit_status(app: &AppHandle, session_id: Option<String>, status: &str) {
 }
 
 fn emit_error(app: &AppHandle, code: &str, message: &str, recoverable: bool) {
-    let _ = app.emit(
+    emit_logged(
+        app,
         "runtime:error",
         RuntimeErrorPayload {
             code: code.into(),
@@ -1541,7 +1788,26 @@ fn emit_error(app: &AppHandle, code: &str, message: &str, recoverable: bool) {
 }
 
 fn emit_metrics(app: &AppHandle, payload: PipelineMetricsPayload) {
-    let _ = app.emit("pipeline:metrics", payload);
+    if let Err(error) = app.emit("pipeline:metrics", payload) {
+        tracing::debug!(event = "pipeline:metrics", error = %error, "Failed to emit metrics");
+    }
+}
+
+fn fatal_error_code(error: &AppError) -> &'static str {
+    match error {
+        AppError::Storage(_) => "PIPELINE_STORAGE_FAILED",
+        AppError::Join(_) => "PIPELINE_TASK_FAILED",
+        AppError::TaskTimeout(_) => "PIPELINE_TASK_TIMEOUT",
+        AppError::Audio(_) => "AUDIO_CAPTURE_FAILED",
+        AppError::Config(_) => "PIPELINE_CONFIG_INVALID",
+        AppError::PipelineStage { stage, .. } if *stage == "session finalization" => {
+            "SESSION_FINALIZE_FAILED"
+        }
+        AppError::PipelineStage { .. }
+        | AppError::Http(_)
+        | AppError::Io(_)
+        | AppError::InvalidApiResponse(_) => "PIPELINE_FAILED",
+    }
 }
 
 fn emit_drop_metrics(
@@ -1590,7 +1856,7 @@ async fn signal_monitor_task(
     token: CancellationToken,
     app: AppHandle,
     _session_id: String,
-) {
+) -> AppResult<()> {
     let mut last_frame_count = frame_counter.load(Ordering::Relaxed);
     let mut last_segment_count = segment_counter.load(Ordering::Relaxed);
     let mut last_activity = Instant::now();
@@ -1619,11 +1885,119 @@ async fn signal_monitor_task(
             last_activity = Instant::now();
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn worker_panics_are_reported() {
+        let mut workers = JoinSet::new();
+        workers.spawn(async { panic!("forced worker panic") });
+        let error = drain_workers_with_timeout(
+            "test workers",
+            &mut workers,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, AppError::Join(_)));
+        assert_eq!(fatal_error_code(&error), "PIPELINE_TASK_FAILED");
+    }
+
+    #[tokio::test]
+    async fn worker_shutdown_timeouts_are_reported() {
+        let mut workers = JoinSet::new();
+        workers.spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let error = drain_workers_with_timeout(
+            "test workers",
+            &mut workers,
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, AppError::TaskTimeout("test workers")));
+        assert_eq!(fatal_error_code(&error), "PIPELINE_TASK_TIMEOUT");
+    }
+
+    #[tokio::test]
+    async fn successful_workers_drain_cleanly() {
+        let mut workers = JoinSet::new();
+        workers.spawn(async {});
+        drain_workers_with_timeout(
+            "test workers",
+            &mut workers,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_prevents_event_callback() {
+        use std::sync::atomic::AtomicBool;
+
+        let temp =
+            std::env::temp_dir().join(format!("online-pipeline-test-{}", uuid::Uuid::new_v4()));
+        let storage = Storage::new_with_dir(&temp).unwrap();
+        let connection = rusqlite::Connection::open(temp.join("runtime.sqlite3")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_segment_insert
+                 BEFORE INSERT ON subtitle_segments
+                 BEGIN SELECT RAISE(FAIL, 'forced segment failure'); END;",
+            )
+            .unwrap();
+        let emitted = Arc::new(AtomicBool::new(false));
+        let emitted_after_persist = emitted.clone();
+        let segment = SubtitleSegment {
+            id: "seg_1".into(),
+            session_id: "session_1".into(),
+            source_text: "source".into(),
+            translated_text: "translated".into(),
+            status: SubtitleStatus::Final,
+            version: 1,
+            start_time: 0.0,
+            end_time: Some(1.0),
+            updated_at: now_iso(),
+            superseded_by: None,
+        };
+
+        let error = persist_then(&storage, segment, |_| {
+            emitted_after_persist.store(true, Ordering::Relaxed);
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(error, AppError::Storage(_)));
+        assert!(!emitted.load(Ordering::Relaxed));
+
+        drop(connection);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn fatal_errors_have_stable_codes() {
+        assert_eq!(
+            fatal_error_code(&AppError::Audio("capture".into())),
+            "AUDIO_CAPTURE_FAILED"
+        );
+        assert_eq!(
+            fatal_error_code(&AppError::Config("missing".into())),
+            "PIPELINE_CONFIG_INVALID"
+        );
+        assert_eq!(
+            fatal_error_code(&AppError::PipelineStage {
+                stage: "session finalization",
+                message: "failed".into(),
+            }),
+            "SESSION_FINALIZE_FAILED"
+        );
+    }
 
     #[test]
     fn rms_handles_empty_and_signal() {

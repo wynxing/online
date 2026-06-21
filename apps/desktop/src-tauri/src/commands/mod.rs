@@ -157,13 +157,7 @@ pub async fn start_session(
 
 #[tauri::command]
 pub async fn stop_session(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    if let Some(session_id) = state.pipeline.stop().await {
-        let ended_at = now_iso();
-        state
-            .storage
-            .finish_session(session_id.clone(), ended_at.clone())
-            .await
-            .map_err(to_string)?;
+    if let Some(session_id) = state.pipeline.stop().await.map_err(to_string)? {
         let sessions = state.storage.list_sessions().await.map_err(to_string)?;
         if let Some(record) = sessions.into_iter().find(|item| item.id == session_id) {
             return serde_json::to_value(record).map_err(|e| e.to_string());
