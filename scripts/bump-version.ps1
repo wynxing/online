@@ -73,6 +73,21 @@ if ($tauriTitleBefore -ne $tauriTitleAfter) {
 }
 Write-Host "  tauri.conf.json title: $tauriTitleAfter"
 
+# Refresh package-lock.json explicitly so the workspace version follows the
+# desktop package version. Missing tools and refresh failures are fatal.
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "npm is required to refresh package-lock.json"
+}
+Write-Host "`nRefreshing package-lock.json..."
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& npm install --package-lock-only --ignore-scripts 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Host $_ }
+$npmExit = $LASTEXITCODE
+$ErrorActionPreference = $prevPref
+if ($npmExit -ne 0) {
+    throw "npm lockfile refresh failed with exit code $npmExit"
+}
+
 # Refresh Cargo.lock so it stays in sync with Cargo.toml. Without this, a
 # release commit can ship with Cargo.lock trailing Cargo.toml (as happened
 # for v0.4.3). cargo not on PATH is non-fatal -- the user can run it
@@ -90,12 +105,19 @@ if (Get-Command cargo -ErrorAction SilentlyContinue) {
     $cargoExit = $LASTEXITCODE
     $ErrorActionPreference = $prevPref
     if ($cargoExit -ne 0) {
-        Write-Warning "cargo check exited with code $cargoExit; Cargo.lock may not be in sync."
+        throw "cargo lockfile refresh failed with exit code $cargoExit"
     } else {
         Write-Host "✓ Cargo.lock updated"
     }
 } else {
-    Write-Warning "cargo not on PATH; Cargo.lock not refreshed. Run 'cargo check' manually before committing."
+    throw "cargo is required to refresh Cargo.lock"
+}
+
+Write-Host "`nVerifying all version metadata..."
+$versionCheck = Join-Path $PSScriptRoot "check-version-consistency.mjs"
+& node $versionCheck --expected $Version
+if ($LASTEXITCODE -ne 0) {
+    throw "Version consistency check failed"
 }
 
 Write-Host "`nVersion bumped to $Version in all files."

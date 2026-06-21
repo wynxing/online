@@ -14,6 +14,13 @@ pub enum AppError {
     Audio(String),
     #[error("Config error: {0}")]
     Config(String),
+    #[error("Pipeline stage {stage} failed: {message}")]
+    PipelineStage {
+        stage: &'static str,
+        message: String,
+    },
+    #[error("Pipeline stage {0} timed out during shutdown")]
+    TaskTimeout(&'static str),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
